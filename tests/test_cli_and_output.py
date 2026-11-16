@@ -206,7 +206,7 @@ def test_copies_are_on_by_default_and_can_be_turned_off():
 def test_cookie_sets_are_renewed_by_default_and_zero_brings_copies_back():
     parse = cli._parser().parse_args
     settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
-    assert settings.renew_donors_every == 25 and settings.clones == 0
+    assert settings.renew_donors_every == 5 and settings.clones == 0
     args = parse(["search", "q", "--no-proxy", "--renew-cookies", "0"])
     settings = cli._build(args, None)[0].settings
     assert settings.renew_donors_every == 0 and settings.clones == 10
