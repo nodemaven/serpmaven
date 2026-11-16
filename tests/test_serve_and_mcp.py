@@ -500,6 +500,31 @@ def test_start_raises_what_stopped_the_scraper_from_being_built():
         Worker(missing_credentials, log=lambda m: None).start()
 
 
+def test_a_worker_stopped_while_building_closes_without_warming():
+    built = threading.Event()
+
+    class Counting(FakeScraper):
+        warmed = 0
+
+        def prewarm(self):
+            self.warmed += 1
+
+    fake = Counting()
+
+    def slow_build():
+        assert built.wait(10)
+        return fake
+
+    worker = Worker(slow_build, prewarm=True, log=lambda m: None)
+    with pytest.raises(RuntimeError, match="did not start"):
+        worker.start(timeout=0.05)
+    worker.stop(timeout=0.05)  # still building: the join gives up
+    built.set()  # the build finishes after the caller has moved on
+    worker._thread.join(10)
+    assert not worker._thread.is_alive()
+    assert fake.warmed == 0 and fake.closed
+
+
 def test_a_worker_that_died_fails_calls_at_once():
     class DyingScraper(FakeScraper):
         def prewarm(self):
