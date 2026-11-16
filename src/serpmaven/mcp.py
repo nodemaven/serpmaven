@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable
 from typing import IO, Any
 
-from . import __version__
+from . import __version__, hints
 from .output import use_utf8
 from .scraper import ExitsRefused
 from .server import Worker, locale_problem, search_job, settle_job
@@ -131,12 +131,18 @@ def compact(records: list[dict[str, Any]]) -> dict[str, Any]:
 class McpServer:
     def __init__(
         self,
-        worker: Worker,
+        worker: Worker | None,
         *,
         stdout: IO[str] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        unavailable: str | None = None,
     ) -> None:
+        """`unavailable`: why searches cannot run (a setup error); every call then
+        answers with it, so the agent can tell its user what to fix."""
+        if worker is None and unavailable is None:
+            raise ValueError("a server needs a worker or the reason it has none")
         self._worker = worker
+        self._unavailable = unavailable
         self._clock = clock
         self._recent: dict[tuple, tuple[float, dict[str, Any]]] = {}
         # One message per line: "\n" exactly, not the platform's "\r\n".
@@ -178,11 +184,14 @@ class McpServer:
     def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "initialize":
             asked = params.get("protocolVersion")
-            return {
+            reply = {
                 "protocolVersion": asked if asked in SUPPORTED_VERSIONS else SUPPORTED_VERSIONS[0],
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "serpmaven", "version": __version__},
             }
+            if self._unavailable:
+                reply["instructions"] = f"Searches cannot run: {self._unavailable}"
+            return reply
         if method == "ping":
             return {}
         if method == "tools/list":
@@ -194,25 +203,12 @@ class McpServer:
     def _call(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("name") != TOOL["name"]:
             raise _RpcError(-32602, f"unknown tool: {params.get('name')}")
-        args = params.get("arguments") or {}
-        query = str(args.get("query") or "").strip()
-        if not query:
-            return _tool_error("query is required")
-        try:
-            pages = int(args.get("pages", 1))
-        except (TypeError, ValueError):
-            return _tool_error("pages must be an integer")
-        pages = max(1, min(MAX_PAGES, pages))
-        links = args.get("links")
-        if links is not None and (
-            not isinstance(links, int) or isinstance(links, bool) or links < 0
-        ):
-            return _tool_error("links must be an integer, 0 or more")
-        hl, gl = str(args.get("hl") or "") or None, str(args.get("gl") or "") or None
-        problem = locale_problem(hl, gl)
-        if problem:
-            return _tool_error(problem)
-        key = (query, pages, hl, gl, links)
+        if self._unavailable:
+            return _tool_error(f"serpmaven cannot search: {self._unavailable}")
+        key = _arguments(params.get("arguments") or {})
+        if isinstance(key, str):
+            return _tool_error(key)
+        query, pages, hl, gl, links = key
         now = self._clock()
         kept = self._recent.get(key)
         if kept and now - kept[0] < REPEAT_SECONDS:
@@ -222,7 +218,7 @@ class McpServer:
         except ExitsRefused as exc:
             return _tool_error(str(exc))
         except Exception as exc:
-            return _tool_error(f"{type(exc).__name__}: {exc}")
+            return _tool_error(hints.explain(exc) or f"{type(exc).__name__}: {exc}")
         # The worker thread does the upkeep while this one writes the answer.
         self._worker.after(settle_job)
         body = compact(records)
@@ -250,6 +246,27 @@ class _RpcError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _arguments(args: dict[str, Any]) -> tuple | str:
+    """(query, pages, hl, gl, links) from a call's arguments, or what is wrong
+    with them."""
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return "query is required"
+    try:
+        pages = int(args.get("pages", 1))
+    except (TypeError, ValueError):
+        return "pages must be an integer"
+    pages = max(1, min(MAX_PAGES, pages))
+    links = args.get("links")
+    if links is not None and (not isinstance(links, int) or isinstance(links, bool) or links < 0):
+        return "links must be an integer, 0 or more"
+    hl, gl = str(args.get("hl") or "") or None, str(args.get("gl") or "") or None
+    problem = locale_problem(hl, gl)
+    if problem:
+        return problem
+    return query, pages, hl, gl, links
 
 
 def _tool_error(text: str) -> dict[str, Any]:

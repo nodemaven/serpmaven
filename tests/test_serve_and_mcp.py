@@ -467,10 +467,7 @@ def test_a_worker_that_died_fails_calls_at_once():
     worker.stop()
 
 
-@pytest.mark.parametrize("argv", [["mcp", "--nodemaven"], ["serve"]])
-def test_serve_and_mcp_exit_on_a_bad_setup(argv, monkeypatch, capsys):
-    from serpmaven.cli import main
-
+def _no_proxy_settings(monkeypatch):
     for name in (
         "NODEMAVEN_LOGIN",
         "NODEMAVEN_PASSWORD",
@@ -479,8 +476,71 @@ def test_serve_and_mcp_exit_on_a_bad_setup(argv, monkeypatch, capsys):
         "GBS_PROXY",
     ):
         monkeypatch.delenv(name, raising=False)
-    assert main(argv) == 1
+
+
+def test_serve_exits_on_a_bad_setup(monkeypatch, capsys):
+    from serpmaven.cli import main
+
+    _no_proxy_settings(monkeypatch)
+    assert main(["serve"]) == 1
     assert capsys.readouterr().err.startswith("error: ")
+
+
+@pytest.mark.parametrize(
+    ("argv", "browser", "reason"),
+    [
+        (["mcp"], None, "no proxy: run `serpmaven login`"),
+        (["mcp", "--nodemaven"], None, ""),
+        (
+            [
+                "mcp",
+                "--proxy",
+                "http://u-session-{session}:p@gate.example.com:7000",
+                "--country",
+                "us",
+            ],
+            None,
+            "--country only applies to NodeMaven",
+        ),
+        (["mcp", "--no-proxy"], False, "serpmaven install"),
+    ],
+)
+def test_mcp_with_a_bad_setup_answers_every_call_with_the_reason(
+    argv, browser, reason, monkeypatch, capsys
+):
+    from serpmaven import installer
+    from serpmaven.cli import main
+
+    _no_proxy_settings(monkeypatch)
+    if browser is False:
+        monkeypatch.setattr(installer, "browser_installed", lambda *a, **k: False)
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "google_search", "arguments": {"query": "shoes"}},
+        },
+    ]
+    lines = "".join(json.dumps(m) + "\n" for m in messages)
+    monkeypatch.setattr("sys.stdin", io.StringIO(lines))
+    assert main(argv) == 1
+    out, err = capsys.readouterr()
+    assert err.startswith("error: ") and reason in err
+    replies = {r["id"]: r for r in map(json.loads, out.splitlines())}
+    assert reason in replies[1]["result"]["instructions"]
+    assert [t["name"] for t in replies[2]["result"]["tools"]] == ["google_search"]
+    call = replies[3]["result"]
+    assert call["isError"] is True
+    assert call["content"][0]["text"].startswith("serpmaven cannot search: ")
+    assert reason in call["content"][0]["text"]
+
+
+def test_mcp_server_needs_a_worker_or_a_reason():
+    with pytest.raises(ValueError):
+        McpServer(None, stdout=io.StringIO())
 
 
 MCP_CHILD = Path(__file__).with_name("stdio_mcp_child.py")

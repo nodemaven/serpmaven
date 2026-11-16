@@ -9,7 +9,7 @@ import shlex
 import sys
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -392,12 +392,7 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
 @contextmanager
 def _proxy_source(args) -> Iterator[Any]:
     """One proxy source per run, shared by every worker; a demo sub-user is deleted on exit."""
-    kind, url = _source_kind(args)
-    if args.country and kind not in ("nodemaven", "nodemaven-demo"):
-        raise ValueError(
-            "--country only applies to NodeMaven; put the country in your provider's "
-            "proxy URL instead"
-        )
+    kind, url = _checked_source(args)
     if kind == "nodemaven":
         proxy = NodeMavenSource(country=args.country)
     elif kind == "nodemaven-demo":
@@ -416,6 +411,17 @@ def _proxy_source(args) -> Iterator[Any]:
         yield proxy
     finally:
         _cleanup_subuser(proxy, args.keep_subuser)
+
+
+def _checked_source(args) -> tuple[str, str | None]:
+    """`_source_kind`, refusing settings that only one kind of proxy takes."""
+    kind, url = _source_kind(args)
+    if args.country and kind not in ("nodemaven", "nodemaven-demo"):
+        raise ValueError(
+            "--country only applies to NodeMaven: remove it, and put the country in "
+            "your provider's proxy URL instead"
+        )
+    return kind, url
 
 
 def _source_kind(args) -> tuple[str, str | None]:
@@ -512,8 +518,9 @@ def _build(
 
 
 def _ready(args, *, ask: bool = True) -> None:
-    """Fail early on what would only fail after minutes: no proxy, no browser."""
-    _source_kind(args)
+    """Fail early on what would only fail after minutes: no proxy, a setting the
+    proxy does not take, no browser."""
+    _checked_source(args)
     if args.engine == "patchright" and not args.channel:
         installer.ensure_browser(ask=ask)
 
@@ -680,18 +687,40 @@ def _mcp(args) -> int:
     from .mcp import McpServer
     from .server import Worker
 
-    # stdin is the MCP client's, so nobody can be asked: a missing browser is an error.
-    _ready(args, ask=False)
-    progress = None if args.verbose else Progress(breaker=Settings().breaker)
-    with _proxy_source(args) as proxy:
+    stack = ExitStack()
+    try:
+        # stdin is the MCP client's, so nobody can be asked: a missing browser is an error.
+        _ready(args, ask=False)
+        proxy = stack.enter_context(_proxy_source(args))
+        progress = None if args.verbose else Progress(breaker=Settings().breaker)
         worker = Worker(
             lambda: _build(args, proxy, progress=progress)[0], prewarm=args.prewarm
         ).start()
+    except Exception as exc:
+        stack.close()
+        problem = _setup_problem(exc)
+        print(f"error: {problem}", file=sys.stderr)
+        # A client shows a server that exits at start as "failed" and keeps the
+        # reason in its log. One that answers every call with the reason lets the
+        # agent tell its user what to fix.
+        McpServer(None, unavailable=problem).serve()
+        return 1
+    with stack:
         try:
             McpServer(worker).serve()
         finally:
             worker.stop()
     return 0
+
+
+def _setup_problem(exc: BaseException) -> str:
+    """One line saying what stopped a run from starting."""
+    hint = hints.explain(exc)
+    if hint:
+        return hint
+    if isinstance(exc, (ValueError, RuntimeError)):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _cleanup_subuser(proxy, keep: bool) -> None:

@@ -27,10 +27,12 @@ def browser_path() -> str | None:
         return None
 
 
-def browser_installed(path_of: Callable[[], str | None] = browser_path) -> bool:
+def browser_installed(path_of: Callable[[], str | None] | None = None) -> bool:
     """True when the browser is on disk, or when that cannot be checked (the
     launch then reports its own error)."""
-    path = path_of()
+    # Looked up when called, not bound as a default, so a replaced
+    # `browser_path` (tests) is the one asked.
+    path = (path_of or browser_path)()
     return path is None or os.path.exists(path)
 
 

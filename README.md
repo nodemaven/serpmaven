@@ -348,6 +348,8 @@ Google shows them. `links` is how many of the top results get their full URL
 result without one carries its site when Google shows it.
 Positions run on across the pages of one answer. A call repeated with the same
 arguments within 10 minutes gets the first answer back, with no new search.
+When it cannot search at all - no saved login, no browser, or a flag the proxy
+does not take - the server still starts and answers every call with what to fix.
 
 ## Docker
 
