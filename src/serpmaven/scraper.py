@@ -113,7 +113,10 @@ DONOR_REFUSALS = 2
 #: set has fresh ones to hand over to instead of one set overwritten in place.
 DONOR_SLOTS = 4
 #: Served queries on an exit between renewals of the cookie set, by default.
-RENEW_EVERY = 25
+#: An exit started from a set gets results as good as one warmed up from scratch,
+#: at a fraction of the traffic, so the first set is taken early: a short session,
+#: such as an agent's, rarely reaches a large number before an exit is refused.
+RENEW_EVERY = 5
 
 
 def _retry_copy(copy, dest: str, attempts: int) -> None:

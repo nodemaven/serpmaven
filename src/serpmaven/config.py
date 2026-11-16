@@ -50,8 +50,9 @@ def save(data: dict[str, Any]) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     target = path()
     # Created with owner-only permissions on POSIX before anything is written,
-    # so the password is never in a file others can read; on Windows the
-    # per-user config folder is already private to the user.
+    # so the password is never in a file others can read. On Windows the file
+    # takes the per-user config folder's permissions: the user, SYSTEM and
+    # administrators.
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)

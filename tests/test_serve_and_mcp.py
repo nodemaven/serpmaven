@@ -360,6 +360,57 @@ def test_mcp_result_without_a_link_carries_its_site():
     ]
 
 
+def test_mcp_positions_run_on_across_pages():
+    from serpmaven.mcp import compact
+
+    def page(n):
+        return {"organic_results": [{"position": i, "title": f"{n}-{i}"} for i in (1, 2, 3)]}
+
+    results = compact([page(1), {"error": "refused"}, page(2)])["results"]
+    assert [(r["position"], r["title"]) for r in results] == [
+        (1, "1-1"),
+        (2, "1-2"),
+        (3, "1-3"),
+        (4, "2-1"),
+        (5, "2-2"),
+        (6, "2-3"),
+    ]
+
+
+def test_mcp_repeated_call_reuses_the_answer_for_a_while(worker):
+    from serpmaven.mcp import REPEAT_SECONDS
+
+    now = [1000.0]
+    server = McpServer(worker, stdout=io.StringIO(), clock=lambda: now[0])
+
+    def call(**args):
+        params = {"name": "google_search", "arguments": {"query": "shoes", **args}}
+        return rpc(server, "tools/call", params)["result"]
+
+    first = call()
+    now[0] += 30
+    assert call() == first  # a client that gave up and asked again
+    assert len(worker.fake.calls) == 1
+    call(pages=2)  # other arguments are another search
+    assert len(worker.fake.calls) == 2
+    now[0] += REPEAT_SECONDS
+    call()
+    assert len(worker.fake.calls) == 3
+
+
+def test_mcp_failed_call_is_not_reused():
+    fake = FakeScraper(refuse=True)
+    w = Worker(lambda: fake, log=lambda m: None).start()
+    try:
+        server = McpServer(w, stdout=io.StringIO())
+        params = {"name": "google_search", "arguments": {"query": "shoes"}}
+        assert rpc(server, "tools/call", params)["result"]["isError"] is True
+        assert rpc(server, "tools/call", params)["result"]["isError"] is True
+        assert len(fake.calls) == 2
+    finally:
+        w.stop()
+
+
 def test_mcp_errors(worker):
     server = McpServer(worker, stdout=io.StringIO())
     assert rpc(server, "nope")["error"]["code"] == -32601

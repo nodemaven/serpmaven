@@ -11,7 +11,7 @@ Register it with an MCP client as a command, for example:
     {"command": "serpmaven", "args": ["mcp", "--nodemaven", "--country", "us"],
      "env": {"NODEMAVEN_LOGIN": "...", "NODEMAVEN_PASSWORD": "..."}}
 
-The first call warms an exit and can take a minute or two; `--prewarm` starts
+The first call warms an exit and can take a few minutes; `--prewarm` starts
 that at launch instead.
 """
 
@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import sys
+import time
+from collections.abc import Callable
 from typing import IO, Any
 
 from . import __version__
@@ -31,6 +33,12 @@ MAX_PAGES = 3
 #: Links resolved per page when a call does not say (`serpmaven mcp --links`
 #: changes it). The top five answer in about 8 s; all of them take about 25 s.
 DEFAULT_LINKS = 5
+#: Seconds a call's answer is reused for the same arguments. The server answers
+#: one call at a time, so a client that gave up waiting and asks again would
+#: otherwise wait for the first search and then pay for a second one.
+REPEAT_SECONDS = 600
+#: Answers kept for reuse at most.
+REPEAT_KEEP = 32
 
 TOOL = {
     "name": "google_search",
@@ -43,7 +51,7 @@ TOOL = {
         "Search Google through a real browser and the configured proxy. Returns "
         "organic results (position, title, link, snippet), 'People also ask' "
         "questions, related searches, the AI Overview and map places when Google "
-        "shows them. The first call can take a minute or two "
+        "shows them. The first call can take a few minutes "
         "while a proxy exit is warmed up; later calls take seconds."
     ),
     "inputSchema": {
@@ -82,19 +90,26 @@ TOOL = {
 
 
 def compact(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """What a model needs from the records, without the SERP API bookkeeping."""
+    """What a model needs from the records, without the SERP API bookkeeping.
+
+    A record numbers its results from 1 on every page; here positions run on
+    across the pages of one answer, so page 2 starts after page 1's last result.
+    """
     out: dict[str, Any] = {"results": [], "related_questions": [], "related_searches": []}
     errors = []
     for record in records:
         if "error" in record:
             errors.append(record["error"])
             continue
+        before = len(out["results"])
         for r in record.get("organic_results", []):
             result = {
                 k: r.get(k)
                 for k in ("position", "title", "link", "snippet")
                 if r.get(k) is not None
             }
+            if isinstance(result.get("position"), int):
+                result["position"] += before
             site = (r.get("displayed_link") or "").split(" ")[0]
             if "link" not in result and site:
                 result["site"] = site
@@ -114,8 +129,16 @@ def compact(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class McpServer:
-    def __init__(self, worker: Worker, *, stdout: IO[str] | None = None) -> None:
+    def __init__(
+        self,
+        worker: Worker,
+        *,
+        stdout: IO[str] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._worker = worker
+        self._clock = clock
+        self._recent: dict[tuple, tuple[float, dict[str, Any]]] = {}
         # One message per line: "\n" exactly, not the platform's "\r\n".
         self._out = stdout if stdout is not None else use_utf8(sys.stdout, newline="\n")
 
@@ -189,6 +212,11 @@ class McpServer:
         problem = locale_problem(hl, gl)
         if problem:
             return _tool_error(problem)
+        key = (query, pages, hl, gl, links)
+        now = self._clock()
+        kept = self._recent.get(key)
+        if kept and now - kept[0] < REPEAT_SECONDS:
+            return kept[1]
         try:
             records = self._worker.call(search_job(query, pages, hl, gl, links))
         except ExitsRefused as exc:
@@ -198,11 +226,20 @@ class McpServer:
         # The worker thread does the upkeep while this one writes the answer.
         self._worker.after(settle_job)
         body = compact(records)
-        return {
+        answer = {
             "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
             "isError": not (body["results"] or body.get("ai_overview") or body.get("places"))
             and bool(body.get("errors")),
         }
+        if not answer["isError"]:
+            self._keep(key, now, answer)
+        return answer
+
+    def _keep(self, key: tuple, now: float, answer: dict[str, Any]) -> None:
+        self._recent = {k: v for k, v in self._recent.items() if now - v[0] < REPEAT_SECONDS}
+        self._recent[key] = (now, answer)
+        while len(self._recent) > REPEAT_KEEP:
+            del self._recent[next(iter(self._recent))]
 
     def _write(self, message: dict[str, Any]) -> None:
         self._out.write(json.dumps(message, ensure_ascii=False) + "\n")
