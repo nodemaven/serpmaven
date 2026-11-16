@@ -227,8 +227,9 @@ class McpServer:
             "isError": not (body["results"] or body.get("ai_overview") or body.get("places"))
             and bool(body.get("errors")),
         }
-        if not answer["isError"]:
-            self._keep(key, now, answer)
+        # Only a whole answer is reused: one with a refused page is asked again.
+        if not body.get("errors"):
+            self._keep(key, self._clock(), answer)
         return answer
 
     def _keep(self, key: tuple, now: float, answer: dict[str, Any]) -> None:
@@ -256,7 +257,7 @@ def _arguments(args: dict[str, Any]) -> tuple | str:
         return "query is required"
     try:
         pages = int(args.get("pages", 1))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return "pages must be an integer"
     pages = max(1, min(MAX_PAGES, pages))
     links = args.get("links")

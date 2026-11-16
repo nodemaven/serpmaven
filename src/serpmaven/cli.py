@@ -8,6 +8,7 @@ import math
 import shlex
 import sys
 import time
+import traceback
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -688,17 +689,23 @@ def _mcp(args) -> int:
     from .server import Worker
 
     stack = ExitStack()
+    worker = None
     try:
         # stdin is the MCP client's, so nobody can be asked: a missing browser is an error.
         _ready(args, ask=False)
         proxy = stack.enter_context(_proxy_source(args))
         progress = None if args.verbose else Progress(breaker=Settings().breaker)
-        worker = Worker(
-            lambda: _build(args, proxy, progress=progress)[0], prewarm=args.prewarm
-        ).start()
+        worker = Worker(lambda: _build(args, proxy, progress=progress)[0], prewarm=args.prewarm)
+        worker.start()
     except Exception as exc:
+        # A start that timed out leaves the thread running: stop it before the
+        # proxy source it would use is released.
+        if worker is not None:
+            worker.stop()
         stack.close()
         problem = _setup_problem(exc)
+        if not _expected_setup_error(exc):
+            traceback.print_exception(exc, file=sys.stderr)
         print(f"error: {problem}", file=sys.stderr)
         # A client shows a server that exits at start as "failed" and keeps the
         # reason in its log. One that answers every call with the reason lets the
@@ -711,6 +718,11 @@ def _mcp(args) -> int:
         finally:
             worker.stop()
     return 0
+
+
+def _expected_setup_error(exc: BaseException) -> bool:
+    """A setup error the user fixes (a hint or our own message), not a bug."""
+    return hints.explain(exc) is not None or isinstance(exc, (ValueError, RuntimeError))
 
 
 def _setup_problem(exc: BaseException) -> str:
