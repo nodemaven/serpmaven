@@ -206,10 +206,25 @@ def test_copies_are_on_by_default_and_can_be_turned_off():
 def test_cookie_sets_are_renewed_by_default_and_zero_brings_copies_back():
     parse = cli._parser().parse_args
     settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
-    assert settings.renew_donors_every == 25 and settings.clones == 0
+    assert settings.renew_donors_every == 5 and settings.clones == 0
     args = parse(["search", "q", "--no-proxy", "--renew-cookies", "0"])
     settings = cli._build(args, None)[0].settings
     assert settings.renew_donors_every == 0 and settings.clones == 10
+
+
+def test_links_resolves_all_by_default_five_for_mcp_and_refuses_a_negative():
+    parse = cli._parser().parse_args
+
+    def links(argv):
+        return cli._build(parse(argv), None)[0].settings.links
+
+    assert links(["search", "q", "--no-proxy"]) is None
+    assert links(["serve", "--no-proxy"]) is None
+    assert links(["mcp", "--no-proxy"]) == 5
+    assert links(["search", "q", "--no-proxy", "--links", "0"]) == 0
+    assert links(["mcp", "--no-proxy", "--links", "10"]) == 10
+    with pytest.raises(ValueError, match="--links"):
+        links(["search", "q", "--no-proxy", "--links", "-1"])
 
 
 def test_load_cookies_takes_a_donor_file_and_keeps_google_only(tmp_path):

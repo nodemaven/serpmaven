@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.nodemaven/serpmaven -->
 <div align="center">
 
 <img src="https://raw.githubusercontent.com/nodemaven/serpmaven/main/assets/banner.png" alt="SERP Maven">
@@ -204,6 +205,8 @@ the traffic used, warm-up apart from the pages.
 A file of queries, one per line: `serpmaven search -f queries.txt -o results.jsonl`.
 `--proxy`, `--nodemaven`, `SERPMAVEN_PROXY` and `NODEMAVEN_LOGIN` / `NODEMAVEN_PASSWORD`
 win over the saved login; `serpmaven logout` deletes it.
+Through NodeMaven, each proxy IP's session id starts with `serpmaven`, so the
+traffic shows up as the scraper's on your account; other proxies get the plain id.
 
 > [!TIP]
 > 🎁 **2 GB of free traffic.** No NodeMaven account yet? [Sign up](https://dashboard.nodemaven.com/accounts/signup/?utm_source=github&utm_medium=readme&utm_campaign=google_browser_scraper&utm_content=signup_promo) and enter the code **GOOGLENM**. Once per account.
@@ -314,7 +317,7 @@ In PowerShell, call `curl.exe` (plain `curl` there is another command).
 
 - Same record format as above
 - `--host` and `--port` set the address (default `127.0.0.1:8000`)
-- `pages=N` returns N result pages for one query as a JSON array of records, up to `--max-pages` (default 3); more is answered 400
+- `pages=N` returns N result pages for one query, up to `--max-pages` (default 3); more is answered 400. One page is a single record, more are a JSON array of records
 - `hl` (language) and `gl` (country) per request: `/search.json?q=...&hl=de&gl=at`
 - `--prewarm` finds a proxy IP Google serves at startup, so the first request does not wait for a warm-up; `/health` answers 503 `warming` until then
 - Results pages are read one at a time on one held proxy IP; a page's links resolve in the background, so the next request starts while the last one waits for its links
@@ -338,9 +341,15 @@ In PowerShell, call `curl.exe` (plain `curl` there is another command).
 
 It uses the login saved with `serpmaven login`; or add
 `"env": {"NODEMAVEN_LOGIN": "...", "NODEMAVEN_PASSWORD": "..."}`. One tool,
-`google_search(query, pages, hl, gl)`. It returns the organic results,
+`google_search(query, pages, hl, gl, links)`. It returns the organic results,
 "People also ask", related searches, and the AI Overview and map places when
-Google shows them.
+Google shows them. `links` is how many of the top results get their full URL
+(default 5, or `--links N` on the `mcp` command); fewer answers sooner, and a
+result without one carries its site when Google shows it.
+Positions run on across the pages of one answer. A call repeated with the same
+arguments within 10 minutes gets the first answer back, with no new search.
+When it cannot search at all - no saved login, no browser, or a flag the proxy
+does not take - the server still starts and answers every call with what to fix.
 
 ## Docker
 
@@ -410,7 +419,7 @@ Google cookies of a browser Google already serves, so it skips the warm-up; the
 file can come from another machine. `--renew-cookies N` replaces that set with
 the cookies of a served proxy IP every N queries, so it stays fresh, and without
 `--cookies` it ends the warm-ups after the first renewal. It is on by default,
-every 25 queries, so a run warms up its first proxy IP and rarely another;
+every 5 queries, so a run warms up its first proxy IP and rarely another;
 `--renew-cookies 0` goes back to copies of the first served profile.
 `--cookies-out DIR` saves each renewed set for the next run, readable by its
 owner only. If every set is refused in turn, new proxy IPs are warmed up again,
@@ -448,17 +457,23 @@ The defaults come from measurements in
 |---|---|---|
 | `-f`, `--file FILE` | | Queries from FILE, one per line |
 | `-o`, `--output FILE` | stdout | Where the results are written |
+| `--resume` | | Skip the queries the `--output` file already has results for and add to it (jsonl); failed ones are asked again |
 | `--workers N` | 1 | Search on N proxy IPs at once, one browser each, from one list of queries |
 | `--max-per-exit N` | 300 | Queries before a served proxy IP is retired |
 | `--restart-every N` | 50 | Results pages the browser rendered before it restarts on the same profile and proxy IP; `0` never |
 | `--no-hybrid` | | Fetch every results page in the browser instead of over HTTP between Google's checks |
 | `--hl`, `--gl` | `en`, unset | Language and country of the results |
+| `--location PLACE` | unset | Search as from this place, by its canonical name: `"Austin,Texas,United States"` |
+| `--tbs FILTER` | unset | Google's `tbs` filter as it is, e.g. `qdr:w` for the past week |
+| `--no-personalization` | | Results without personalization (`pws=0`) |
+| `--no-autocorrect` | | Search a misspelt query as typed (`nfpr=1`) |
+| `--cr COUNTRIES`, `--lr LANGUAGES` | unset | Only documents from these countries (`countryUS`) or in these languages (`lang_en`) |
 | `--clone N` | 10 | With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
 | `--clone-max-age` | 180 | Minutes copied cookies stay in use |
 | `--clone-refusals N` | 1 | Copies refused in a row on their first query that end the copying |
 | `--no-clone-cache` | | Copies carry cookies only, not the browser cache |
 | `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
-| `--renew-cookies N` | 25 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
+| `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
 | `--cookies-out DIR` | | Write each renewed cookie set to DIR, for the next run's `--cookies` |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |
 | `--spare N` | 0 | Proxy IPs warmed in the background so a retired one is replaced at once; each costs a warm-up |
@@ -466,9 +481,11 @@ The defaults come from measurements in
 | `--input` | `type` | How a query goes into the search box: `type`, `insert`, `words` |
 | `--gap LOW,HIGH` | 2,5 | Seconds between queries on one proxy IP |
 | `--pages N` | 1 | Result pages per query |
-| `--format` | `jsonl` | `jsonl` or `csv` |
+| `--format` | from `-o`, else `jsonl` | `jsonl`, `json` or `csv`; `-o results.csv` picks `csv` by itself |
+| `--patient MINUTES` | `0` (stop) | When Google refuses proxy IPs until the run stops, wait and go on with the queries left, up to 3 times; a query cut short is asked again from its first page, so its earlier pages appear twice in the output |
 | `--price-per-gb` | | Your proxy price, to print the cost per 1000 pages |
 | `--no-resolve-links` | | Keep result links as Google `/goto` redirects |
+| `--links N` | all; `mcp` 5 | Resolve the links of the first N organic results on each page only; the rest keep their `/goto` redirect. Fewer answers sooner |
 | `--save-html DIR` | | Keep every page's HTML, gzipped |
 | `--channel NAME` | | Browser channel, e.g. `chrome` for the installed Chrome |
 | `--timezone ZONE` | | IANA timezone for the browser, e.g. `Europe/Berlin` |
@@ -476,7 +493,7 @@ The defaults come from measurements in
 | `--headless` | | Run the browser without a window; `serpmaven doctor --headless` shows what a website sees then |
 | `--no-relay` | | Hand the proxy to the browser directly: traffic is not counted, and every results page is fetched in the browser |
 | `--stop-after-read` | | Experimental: leave each query's last results page once it is read |
-| `-v`, `--verbose` | | Print every step as a JSON line instead of the progress line; the run ends with `summary: {...}` |
+| `-v`, `--verbose` | | Print every step as a JSON line on stderr instead of the progress line, after one plain `proxy: ...` line; the run ends with `summary: {...}` |
 
 </details>
 

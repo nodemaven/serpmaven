@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shlex
 import sys
 import time
+import traceback
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 from . import __version__, browser, config, engines, env, hints, installer, usage, warmup
 from .classify import classify
-from .output import WRITERS, open_writer, use_utf8
+from .mcp import DEFAULT_LINKS as MCP_LINKS
+from .output import WRITERS, answered, open_writer, use_utf8
 from .parse import parse_serp
-from .pool import Pool
+from .pool import Pool, WorkerFailed
 from .progress import Progress
 from .proxy import NodeMavenDemoSource, NodeMavenSource, ProxyTemplate
-from .scraper import DIRECT_MODES, RENEW_EVERY, ExitsRefused, Scraper, Settings
+from .scraper import (
+    DIRECT_MODES,
+    RENEW_EVERY,
+    ExitsRefused,
+    ProxyRefused,
+    Scraper,
+    Settings,
+    filter_params,
+)
 from .server import locale_problem
 
 
@@ -65,8 +76,27 @@ def _parser(prog: str = "serpmaven") -> argparse.ArgumentParser:
         metavar="N",
         help="proxy IPs to search on at once, one browser each (default 1)",
     )
-    search.add_argument("--format", choices=list(WRITERS), default="jsonl")
+    search.add_argument(
+        "--format",
+        choices=list(WRITERS),
+        help="output format (default: from the --output file's extension, else jsonl)",
+    )
     search.add_argument("-o", "--output", type=Path, help="output file (default stdout)")
+    search.add_argument(
+        "--resume",
+        action="store_true",
+        help="skip the queries the --output file already has results for and add to it "
+        "(jsonl); failed ones are asked again",
+    )
+    search.add_argument(
+        "--patient",
+        type=_minutes,
+        default=0,
+        metavar="MINUTES",
+        help="when Google refuses proxy IPs until the run stops, wait this long and go on "
+        f"with the queries left, up to {PATIENT_WAITS} times (default: stop); a query cut "
+        "short is asked again from its first page, so its earlier pages appear twice",
+    )
     search.add_argument(
         "--price-per-gb",
         type=float,
@@ -93,7 +123,8 @@ def _parser(prog: str = "serpmaven") -> argparse.ArgumentParser:
     mcp.add_argument(
         "--prewarm", action="store_true", help="find a proxy IP Google serves before the first call"
     )
-    mcp.set_defaults(handler=_mcp)
+    # An agent waits for the answer: the top results' links are what it reads.
+    mcp.set_defaults(handler=_mcp, links=MCP_LINKS)
 
     parse = sub.add_parser("parse", help="parse a saved results page, offline")
     parse.add_argument("file", type=Path)
@@ -243,7 +274,8 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         choices=DIRECT_MODES,
         default="all",
         help="which queries open the results page directly instead of going through "
-        "the search box: all (default), all but the first on each proxy IP, or none",
+        "the search box: all (default), all but the first on each proxy IP, or none; "
+        "a language other than en, a country, a location or a filter always opens it directly",
     )
     p.add_argument(
         "--stop-after-read",
@@ -312,6 +344,32 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         help="country the results are for, e.g. de; unset, Google picks it from the proxy IP",
     )
     p.add_argument(
+        "--location",
+        metavar="PLACE",
+        help='search as from this place, by its canonical name, e.g. "Austin,Texas,United States"',
+    )
+    p.add_argument(
+        "--tbs",
+        metavar="FILTER",
+        help="Google's tbs filter as it is, e.g. qdr:w for the past week",
+    )
+    p.add_argument(
+        "--no-personalization",
+        action="store_true",
+        help="results without personalization (pws=0)",
+    )
+    p.add_argument(
+        "--no-autocorrect",
+        action="store_true",
+        help="search a misspelt query as typed, not as Google corrects it (nfpr=1)",
+    )
+    p.add_argument(
+        "--cr", metavar="COUNTRIES", help="only documents from these countries, e.g. countryUS"
+    )
+    p.add_argument(
+        "--lr", metavar="LANGUAGES", help="only documents in these languages, e.g. lang_en"
+    )
+    p.add_argument(
         "--save-html",
         type=Path,
         metavar="DIR",
@@ -322,19 +380,21 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="leave result links as Google /goto redirects (saves one small request per result)",
     )
+    p.add_argument(
+        "--links",
+        type=int,
+        metavar="N",
+        help="resolve the links of the first N organic results on each page only "
+        "(0: none; default all, mcp 5); the rest carry their /goto redirect",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="log identities to stderr")
 
 
 @contextmanager
 def _proxy_source(args) -> Iterator[Any]:
     """One proxy source per run, shared by every worker; a demo sub-user is deleted on exit."""
-    kind, url = _source_kind(args)
+    kind, url = _checked_source(args)
     usage.ping(args.command, kind)
-    if args.country and kind not in ("nodemaven", "nodemaven-demo"):
-        raise ValueError(
-            "--country only applies to NodeMaven; put the country in your provider's "
-            "proxy URL instead"
-        )
     if kind == "nodemaven":
         proxy = NodeMavenSource(country=args.country)
     elif kind == "nodemaven-demo":
@@ -353,6 +413,17 @@ def _proxy_source(args) -> Iterator[Any]:
         yield proxy
     finally:
         _cleanup_subuser(proxy, args.keep_subuser)
+
+
+def _checked_source(args) -> tuple[str, str | None]:
+    """`_source_kind`, refusing settings that only one kind of proxy takes."""
+    kind, url = _source_kind(args)
+    if args.country and kind not in ("nodemaven", "nodemaven-demo"):
+        raise ValueError(
+            "--country only applies to NodeMaven: remove it, and put the country in "
+            "your provider's proxy URL instead"
+        )
+    return kind, url
 
 
 def _source_kind(args) -> tuple[str, str | None]:
@@ -376,14 +447,15 @@ def _source_kind(args) -> tuple[str, str | None]:
     )
 
 
-def _build(
-    args, proxy, *, pages: int = 1, worker: int | None = None, progress: Progress | None = None
-) -> tuple[Scraper, str]:
+def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
+    """The scraper's settings from the options; raises ValueError on a bad one."""
     problem = locale_problem(args.hl, args.gl)
     if problem:
         raise ValueError(problem.replace("hl", "--hl", 1).replace("gl", "--gl", 1))
+    if args.links is not None and args.links < 0:
+        raise ValueError("--links must be 0 or more")
     browser_args = tuple(args.browser_args) + tuple(shlex.split(env.get("BROWSER_ARGS", "")))
-    settings = Settings(
+    return Settings(
         engine=args.engine,
         warmup=args.warmup,
         pages=pages,
@@ -407,12 +479,25 @@ def _build(
         hybrid=not args.no_hybrid,
         save_html=_html_dir(args.save_html, worker),
         resolve_links=not args.no_resolve_links,
+        links=args.links,
         hl=args.hl,
         gl=args.gl,
+        location=args.location,
+        tbs=args.tbs,
+        personalized=not args.no_personalization,
+        autocorrect=not args.no_autocorrect,
+        cr=args.cr,
+        lr=args.lr,
         donors=tuple(browser.load_cookies(f) for f in args.cookies or ()),
         renew_donors_every=args.renew_cookies,
         donors_out=args.cookies_out,
     )
+
+
+def _build(
+    args, proxy, *, pages: int = 1, worker: int | None = None, progress: Progress | None = None
+) -> tuple[Scraper, str]:
+    settings = _settings(args, pages=pages, worker=worker)
     log = None
     if args.verbose:
         tag = {} if worker is None else {"worker": worker}
@@ -435,13 +520,24 @@ def _build(
 
 
 def _ready(args, *, ask: bool = True) -> None:
-    """Fail early on what would only fail after minutes: no proxy, no browser."""
-    _source_kind(args)
+    """Fail early on what would only fail after minutes: no proxy, a setting the
+    proxy does not take, no browser."""
+    _checked_source(args)
     if args.engine == "patchright" and not args.channel:
         installer.ensure_browser(ask=ask)
 
 
-def _search(args) -> int:  # noqa: C901
+#: How many times `--patient` waits and goes on before the run gives up.
+PATIENT_WAITS = 3
+
+
+def _format_for(output: Path | None) -> str:
+    """The output format a file's extension names; JSON Lines otherwise."""
+    suffix = output.suffix.lower() if output else ""
+    return {".csv": "csv", ".json": "json"}.get(suffix, "jsonl")
+
+
+def _read_queries(args) -> list[str]:
     queries = list(args.queries)
     if args.file:
         try:
@@ -450,47 +546,130 @@ def _search(args) -> int:  # noqa: C901
             raise ValueError(f"query file not found: {args.file} (one query per line)") from None
     if not any(q.strip() for q in queries):
         raise ValueError("no queries given")
+    return queries
+
+
+def _resume(args, fmt: str, queries: list[str]) -> list[str]:
+    if args.output is None or fmt != "jsonl":
+        raise ValueError("--resume needs --output FILE in the jsonl format")
+    settings = _settings(args, pages=args.pages)
+    # Only records made with the same language, country, location and filters count.
+    same = {"hl": settings.hl, "gl": settings.gl, **filter_params(settings)}
+    done = answered(args.output, args.pages, same)
+    total = sum(1 for q in queries if q.strip())
+    left = [q for q in queries if q.strip() and q.strip() not in done]
+    print(
+        f"resume: {total - len(left)} of {total} queries already in {args.output}", file=sys.stderr
+    )
+    return left
+
+
+def _search(args) -> int:
+    fmt = args.format or _format_for(args.output)
+    queries = _read_queries(args)
+    if args.resume:
+        queries = _resume(args, fmt, queries)
+        if not queries:
+            return 0
+    # Every option is checked before anything starts: no browser download, no
+    # demo sub-user, and no existing output file emptied for a bad option.
+    _settings(args, pages=args.pages)
     _ready(args)
     progress = None
     if not args.verbose:
         total = sum(1 for q in queries if q.strip())
         progress = Progress(total=total, breaker=Settings().breaker)
+    failed: set[str] = set()
+    code = 0
     with _proxy_source(args) as proxy:
-        if args.workers != 1:
-            scraper = Pool(
-                lambda i: _build(args, proxy, pages=args.pages, worker=i, progress=progress)[0],
-                args.workers,
-            )
-        else:
-            scraper, _ = _build(args, proxy, pages=args.pages, progress=progress)
-        stream = args.output.open("w", encoding="utf-8", newline="") if args.output else sys.stdout
-        writer = open_writer(args.format, stream)
-        failed, code = 0, 0
+        mode = "a" if args.resume else "w"
+        stream = args.output.open(mode, encoding="utf-8", newline="") if args.output else sys.stdout
+        writer = open_writer(fmt, stream)
         try:
-            for record in scraper.run(queries):
-                failed += record["search_metadata"]["status"] != "Success"
-                writer.write(record)
-                if progress is not None:
-                    progress.record(record)
-        except ExitsRefused as exc:
-            # A pool worker that failed on setup (no browser, no display)
-            # arrives wrapped here; its fix is one line too.
-            if not hints.report(exc):
-                print(f"stopped: {exc}", file=sys.stderr)
-            code = 3
+            for attempt in range(PATIENT_WAITS + 1):
+                if args.workers != 1:
+                    scraper = Pool(
+                        lambda i: _build(
+                            args, proxy, pages=args.pages, worker=i, progress=progress
+                        )[0],
+                        args.workers,
+                    )
+                else:
+                    scraper, _ = _build(args, proxy, pages=args.pages, progress=progress)
+                done, stopped = _run(
+                    scraper, queries, writer, progress, failed, args.price_per_gb, args.pages
+                )
+                code = 3 if stopped else 0
+                queries = [q for q in queries if q.strip() and q.strip() not in done]
+                again = stopped == "breaker" and args.patient
+                if not again or attempt == PATIENT_WAITS or not queries:
+                    break
+                print(
+                    f"waiting {args.patient:g} min, then going on with the {len(queries)} "
+                    f"queries left ({attempt + 1} of {PATIENT_WAITS})",
+                    file=sys.stderr,
+                )
+                time.sleep(args.patient * 60)
         finally:
             writer.close()
-            not_run = getattr(scraper, "not_run", [])
-            if not_run:
-                print(f"not run: {len(not_run)} queries", file=sys.stderr)
             if args.output:
                 stream.close()
-            summary = scraper.stats.summary(args.price_per_gb)
-            if progress is not None:
-                progress.summary(summary)
-            else:
-                print("summary: " + json.dumps(summary), file=sys.stderr)
     return code or (4 if failed else 0)
+
+
+def _last_page(record: dict[str, Any], pages: int) -> bool:
+    """Whether a served page ends its query: page `pages`, or Google has no next one."""
+    page = record["search_parameters"].get("page", 1)
+    return page >= pages or not (record.get("pagination") or {}).get("next")
+
+
+def _stop_reason(exc: ExitsRefused) -> str:
+    if isinstance(exc, ProxyRefused):
+        return "proxy"
+    if isinstance(exc, WorkerFailed):
+        return "worker"
+    return "breaker"
+
+
+def _run(
+    scraper, queries, writer, progress, failed: set[str], price, pages: int = 1
+) -> tuple[set[str], str | None]:
+    """One scraper over the queries: the queries it answered with every page (the
+    last one is page `pages` or has no next page on Google), and what stopped it -
+    "breaker", "proxy" (the account was refused) or "worker" (a pool worker crashed),
+    the last two being what waiting does not change - or None. `failed` keeps the
+    queries whose last answer failed."""
+    done: set[str] = set()
+    stopped = None
+    try:
+        for record in scraper.run(queries):
+            q = record["search_parameters"]["q"].strip()
+            if record["search_metadata"]["status"] == "Success":
+                failed.discard(q)
+                if _last_page(record, pages):
+                    done.add(q)
+            else:
+                failed.add(q)
+                done.discard(q)  # a later page failed: the query is not complete
+            writer.write(record)
+            if progress is not None:
+                progress.record(record)
+    except ExitsRefused as exc:
+        # A pool worker that failed on setup (no browser, no display)
+        # arrives wrapped here; its fix is one line too.
+        if not hints.report(exc):
+            print(f"stopped: {exc}", file=sys.stderr)
+        stopped = _stop_reason(exc)
+    finally:
+        not_run = getattr(scraper, "not_run", [])
+        if not_run:
+            print(f"not run: {len(not_run)} queries", file=sys.stderr)
+        summary = scraper.stats.summary(price)
+        if progress is not None:
+            progress.summary(summary)
+        else:
+            print("summary: " + json.dumps(summary), file=sys.stderr)
+    return done, stopped
 
 
 def _serve(args) -> int:
@@ -510,18 +689,51 @@ def _mcp(args) -> int:
     from .mcp import McpServer
     from .server import Worker
 
-    # stdin is the MCP client's, so nobody can be asked: a missing browser is an error.
-    _ready(args, ask=False)
-    progress = None if args.verbose else Progress(breaker=Settings().breaker)
-    with _proxy_source(args) as proxy:
-        worker = Worker(
-            lambda: _build(args, proxy, progress=progress)[0], prewarm=args.prewarm
-        ).start()
+    stack = ExitStack()
+    worker = None
+    try:
+        # stdin is the MCP client's, so nobody can be asked: a missing browser is an error.
+        _ready(args, ask=False)
+        proxy = stack.enter_context(_proxy_source(args))
+        progress = None if args.verbose else Progress(breaker=Settings().breaker)
+        worker = Worker(lambda: _build(args, proxy, progress=progress)[0], prewarm=args.prewarm)
+        worker.start()
+    except Exception as exc:
+        # A start that timed out leaves the thread running: stop it before the
+        # proxy source it would use is released.
+        if worker is not None:
+            worker.stop()
+        stack.close()
+        problem = _setup_problem(exc)
+        if not _expected_setup_error(exc):
+            traceback.print_exception(exc, file=sys.stderr)
+        print(f"error: {problem}", file=sys.stderr)
+        # A client shows a server that exits at start as "failed" and keeps the
+        # reason in its log. One that answers every call with the reason lets the
+        # agent tell its user what to fix.
+        McpServer(None, unavailable=problem).serve()
+        return 1
+    with stack:
         try:
             McpServer(worker).serve()
         finally:
             worker.stop()
     return 0
+
+
+def _expected_setup_error(exc: BaseException) -> bool:
+    """A setup error the user fixes (a hint or our own message), not a bug."""
+    return hints.explain(exc) is not None or isinstance(exc, (ValueError, RuntimeError))
+
+
+def _setup_problem(exc: BaseException) -> str:
+    """One line saying what stopped a run from starting."""
+    hint = hints.explain(exc)
+    if hint:
+        return hint
+    if isinstance(exc, (ValueError, RuntimeError)):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _cleanup_subuser(proxy, keep: bool) -> None:
@@ -572,6 +784,16 @@ def _html_dir(folder: Path | None, worker: int | None) -> str | None:
     if folder is None:
         return None
     return str(folder if worker is None else folder / f"w{worker}")
+
+
+def _minutes(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a number of minutes") from None
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError("must be a finite number, 0 or more")
+    return value
 
 
 def _non_negative(text: str) -> int:

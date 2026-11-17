@@ -285,6 +285,7 @@ def test_mcp_handshake_and_tool_listing(worker):
     tools = rpc(server, "tools/list")["result"]["tools"]
     assert [t["name"] for t in tools] == ["google_search"]
     assert tools[0]["inputSchema"]["required"] == ["query"]
+    assert tools[0]["annotations"] == {"readOnlyHint": True, "openWorldHint": True}
     assert rpc(server, "ping")["result"] == {}
 
 
@@ -323,6 +324,139 @@ def test_mcp_tool_call_takes_hl_and_gl(worker):
     bad_args = {"query": "q", "gl": "1"}
     bad = rpc(server, "tools/call", {"name": "google_search", "arguments": bad_args})
     assert bad["result"]["isError"] is True
+
+
+def test_mcp_tool_call_takes_a_link_limit(worker):
+    server = McpServer(worker, stdout=io.StringIO())
+    args = {"query": "shoes", "links": 0}
+    reply = rpc(server, "tools/call", {"name": "google_search", "arguments": args})
+    assert reply["result"]["isError"] is False
+    assert worker.fake.locales[-1] == {"links": 0}
+    rpc(server, "tools/call", {"name": "google_search", "arguments": {"query": "shoes"}})
+    assert worker.fake.locales[-1] == {}
+    for bad in (-1, "3", True):
+        args = {"query": "q", "links": bad}
+        reply = rpc(server, "tools/call", {"name": "google_search", "arguments": args})
+        assert reply["result"]["isError"] is True
+
+
+def test_mcp_result_without_a_link_carries_its_site():
+    from serpmaven.mcp import compact
+
+    organic = [
+        {"position": 1, "title": "T", "link": None, "displayed_link": "https://a.example › guides"},
+        {
+            "position": 2,
+            "title": "U",
+            "link": "https://b.example/x",
+            "displayed_link": "https://b.example",
+        },
+        {"position": 3, "title": "V", "link": None},
+    ]
+    assert compact([{"organic_results": organic}])["results"] == [
+        {"position": 1, "title": "T", "site": "https://a.example"},
+        {"position": 2, "title": "U", "link": "https://b.example/x"},
+        {"position": 3, "title": "V"},
+    ]
+
+
+def test_mcp_positions_run_on_across_pages():
+    from serpmaven.mcp import compact
+
+    def page(n):
+        return {"organic_results": [{"position": i, "title": f"{n}-{i}"} for i in (1, 2, 3)]}
+
+    results = compact([page(1), {"error": "refused"}, page(2)])["results"]
+    assert [(r["position"], r["title"]) for r in results] == [
+        (1, "1-1"),
+        (2, "1-2"),
+        (3, "1-3"),
+        (4, "2-1"),
+        (5, "2-2"),
+        (6, "2-3"),
+    ]
+
+
+def test_mcp_repeated_call_reuses_the_answer_for_a_while(worker):
+    from serpmaven.mcp import REPEAT_SECONDS
+
+    now = [1000.0]
+    server = McpServer(worker, stdout=io.StringIO(), clock=lambda: now[0])
+
+    def call(**args):
+        params = {"name": "google_search", "arguments": {"query": "shoes", **args}}
+        return rpc(server, "tools/call", params)["result"]
+
+    first = call()
+    now[0] += 30
+    assert call() == first  # a client that gave up and asked again
+    assert len(worker.fake.calls) == 1
+    call(pages=2)  # other arguments are another search
+    assert len(worker.fake.calls) == 2
+    now[0] += REPEAT_SECONDS
+    call()
+    assert len(worker.fake.calls) == 3
+
+
+def test_mcp_failed_call_is_not_reused():
+    fake = FakeScraper(refuse=True)
+    w = Worker(lambda: fake, log=lambda m: None).start()
+    try:
+        server = McpServer(w, stdout=io.StringIO())
+        params = {"name": "google_search", "arguments": {"query": "shoes"}}
+        assert rpc(server, "tools/call", params)["result"]["isError"] is True
+        assert rpc(server, "tools/call", params)["result"]["isError"] is True
+        assert len(fake.calls) == 2
+    finally:
+        w.stop()
+
+
+class StubWorker:
+    """Answers every call with copies of `records`; a call moves `clock` by `takes`."""
+
+    def __init__(self, records, clock=None, takes=0.0):
+        self.records, self.clock, self.takes, self.calls = records, clock, takes, 0
+
+    def call(self, job):
+        self.calls += 1
+        if self.clock is not None:
+            self.clock[0] += self.takes
+        return [dict(r) for r in self.records]
+
+    def after(self, job):
+        pass
+
+
+def _search(server, **args):
+    params = {"name": "google_search", "arguments": {"query": "shoes", **args}}
+    return rpc(server, "tools/call", params)["result"]
+
+
+def test_mcp_answer_with_a_refused_page_is_asked_again():
+    stub = StubWorker([record("shoes", 1), record("shoes", 2, error="refused on page 2")])
+    server = McpServer(stub, stdout=io.StringIO())
+    assert _search(server, pages=2)["isError"] is False
+    _search(server, pages=2)
+    assert stub.calls == 2
+
+
+def test_mcp_reuse_window_starts_when_the_answer_is_ready():
+    from serpmaven.mcp import REPEAT_SECONDS
+
+    now = [1000.0]
+    stub = StubWorker([record("shoes")], clock=now, takes=REPEAT_SECONDS - 10)
+    server = McpServer(stub, stdout=io.StringIO(), clock=lambda: now[0])
+    _search(server)
+    now[0] += 20  # past the window counted from the request, inside it from the answer
+    _search(server)
+    assert stub.calls == 1
+
+
+def test_mcp_pages_out_of_range_is_an_argument_error():
+    server = McpServer(StubWorker([record("shoes")]), stdout=io.StringIO())
+    answer = _search(server, pages=float("inf"))
+    assert answer["isError"] is True
+    assert answer["content"][0]["text"] == "pages must be an integer"
 
 
 def test_mcp_errors(worker):
@@ -366,6 +500,31 @@ def test_start_raises_what_stopped_the_scraper_from_being_built():
         Worker(missing_credentials, log=lambda m: None).start()
 
 
+def test_a_worker_stopped_while_building_closes_without_warming():
+    built = threading.Event()
+
+    class Counting(FakeScraper):
+        warmed = 0
+
+        def prewarm(self):
+            self.warmed += 1
+
+    fake = Counting()
+
+    def slow_build():
+        assert built.wait(10)
+        return fake
+
+    worker = Worker(slow_build, prewarm=True, log=lambda m: None)
+    with pytest.raises(RuntimeError, match="did not start"):
+        worker.start(timeout=0.05)
+    worker.stop(timeout=0.05)  # still building: the join gives up
+    built.set()  # the build finishes after the caller has moved on
+    worker._thread.join(10)
+    assert not worker._thread.is_alive()
+    assert fake.warmed == 0 and fake.closed
+
+
 def test_a_worker_that_died_fails_calls_at_once():
     class DyingScraper(FakeScraper):
         def prewarm(self):
@@ -381,10 +540,7 @@ def test_a_worker_that_died_fails_calls_at_once():
     worker.stop()
 
 
-@pytest.mark.parametrize("argv", [["mcp", "--nodemaven"], ["serve"]])
-def test_serve_and_mcp_exit_on_a_bad_setup(argv, monkeypatch, capsys):
-    from serpmaven.cli import main
-
+def _no_proxy_settings(monkeypatch):
     for name in (
         "NODEMAVEN_LOGIN",
         "NODEMAVEN_PASSWORD",
@@ -393,8 +549,106 @@ def test_serve_and_mcp_exit_on_a_bad_setup(argv, monkeypatch, capsys):
         "GBS_PROXY",
     ):
         monkeypatch.delenv(name, raising=False)
-    assert main(argv) == 1
+
+
+def test_serve_exits_on_a_bad_setup(monkeypatch, capsys):
+    from serpmaven.cli import main
+
+    _no_proxy_settings(monkeypatch)
+    assert main(["serve"]) == 1
     assert capsys.readouterr().err.startswith("error: ")
+
+
+@pytest.mark.parametrize(
+    ("argv", "browser", "reason"),
+    [
+        (["mcp"], None, "no proxy: run `serpmaven login`"),
+        # Without the SDK or without a login: both messages name NodeMaven.
+        (["mcp", "--nodemaven"], None, "NodeMaven"),
+        (
+            [
+                "mcp",
+                "--proxy",
+                "http://u-session-{session}:p@gate.example.com:7000",
+                "--country",
+                "us",
+            ],
+            None,
+            "--country only applies to NodeMaven",
+        ),
+        (["mcp", "--no-proxy"], False, "serpmaven install"),
+    ],
+)
+def test_mcp_with_a_bad_setup_answers_every_call_with_the_reason(
+    argv, browser, reason, monkeypatch, capsys
+):
+    from serpmaven import installer
+    from serpmaven.cli import main
+
+    _no_proxy_settings(monkeypatch)
+    if browser is False:
+        monkeypatch.setattr(installer, "browser_installed", lambda *a, **k: False)
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "google_search", "arguments": {"query": "shoes"}},
+        },
+    ]
+    lines = "".join(json.dumps(m) + "\n" for m in messages)
+    monkeypatch.setattr("sys.stdin", io.StringIO(lines))
+    assert main(argv) == 1
+    out, err = capsys.readouterr()
+    assert err.startswith("error: ") and reason in err
+    assert "Traceback" not in err  # a setup error the user fixes, not a bug
+    said = err.strip().removeprefix("error: ")
+    replies = {r["id"]: r for r in map(json.loads, out.splitlines())}
+    assert replies[1]["result"]["instructions"] == f"Searches cannot run: {said}"
+    assert [t["name"] for t in replies[2]["result"]["tools"]] == ["google_search"]
+    call = replies[3]["result"]
+    assert call["isError"] is True
+    assert call["content"][0]["text"] == f"serpmaven cannot search: {said}"
+
+
+def test_mcp_server_needs_a_worker_or_a_reason():
+    with pytest.raises(ValueError):
+        McpServer(None, stdout=io.StringIO())
+
+
+def test_mcp_stops_a_worker_that_did_not_start_and_shows_an_unexpected_error(monkeypatch, capsys):
+    from serpmaven import installer, server
+    from serpmaven.cli import main
+
+    stopped = []
+
+    class NotStarting:
+        def __init__(self, make, prewarm=False):
+            pass
+
+        def start(self):
+            raise TypeError("boom")
+
+        def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(server, "Worker", NotStarting)
+    monkeypatch.setattr(installer, "browser_installed", lambda *a, **k: True)
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "google_search", "arguments": {"query": "shoes"}},
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(call) + "\n"))
+    assert main(["mcp", "--no-proxy"]) == 1
+    out, err = capsys.readouterr()
+    assert stopped == [True]
+    assert "Traceback" in err and err.rstrip().endswith("error: TypeError: boom")
+    answer = json.loads(out.splitlines()[0])["result"]
+    assert answer["isError"] is True and "TypeError: boom" in answer["content"][0]["text"]
 
 
 MCP_CHILD = Path(__file__).with_name("stdio_mcp_child.py")

@@ -152,18 +152,13 @@ class Worker:
         self._started.set()
         cause: BaseException = RuntimeError("stopped")
         try:
+            # Stopped while the scraper was still being built (a start that timed
+            # out): close it without warming anything, because whoever stopped
+            # it may already have released the proxy source it would use.
+            if self._stopping.is_set():
+                return
             if self._prewarm:
-                try:
-                    self.scraper.prewarm()
-                    self._log("prewarm: an exit is served")
-                except Exception as exc:
-                    hint = hints.explain(exc)
-                    self._log(
-                        f"prewarm failed: {hint}"
-                        if hint
-                        else f"prewarm failed: {type(exc).__name__}: {exc}"
-                    )
-                    self.scraper.reset_breaker()
+                self._warm()
             self.ready.set()
             while True:
                 item = self._jobs.get()
@@ -191,6 +186,20 @@ class Worker:
                 self._log(f"closing the scraper failed: {type(exc).__name__}: {exc}")
             self._shut_down(cause)
 
+    def _warm(self) -> None:
+        """The prewarm; a failure is logged and leaves the breaker reset."""
+        try:
+            self.scraper.prewarm()
+            self._log("prewarm: an exit is served")
+        except Exception as exc:
+            hint = hints.explain(exc)
+            self._log(
+                f"prewarm failed: {hint}"
+                if hint
+                else f"prewarm failed: {type(exc).__name__}: {exc}"
+            )
+            self.scraper.reset_breaker()
+
     def _shut_down(self, cause: BaseException) -> None:
         """Refuse new jobs and fail the ones still queued."""
         self.ready.set()  # nothing is warming any more; /health reports the failure
@@ -210,15 +219,20 @@ class Worker:
 
 
 def search_job(
-    query: str, pages: int, hl: str | None = None, gl: str | None = None
+    query: str,
+    pages: int,
+    hl: str | None = None,
+    gl: str | None = None,
+    links: int | None = None,
 ) -> Callable[[Scraper], list[dict[str, Any]]]:
     """A job that runs one query for `pages` pages and leaves the identity open.
-    `hl` and `gl` override the scraper's for this query.
+    `hl` and `gl` override the scraper's for this query; `links` is how many
+    organic results per page get their link resolved (None: all).
 
     The upkeep the query leaves (a template copy, a restart) is not done here:
     queue `settle_job` once the answer is out, so the caller does not wait for it.
     """
-    return _query_job("search", query, pages, hl, gl)
+    return _query_job("search", query, pages, hl, gl, links)
 
 
 def start_job(

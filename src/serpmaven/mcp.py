@@ -11,7 +11,7 @@ Register it with an MCP client as a command, for example:
     {"command": "serpmaven", "args": ["mcp", "--nodemaven", "--country", "us"],
      "env": {"NODEMAVEN_LOGIN": "...", "NODEMAVEN_PASSWORD": "..."}}
 
-The first call warms an exit and can take a minute or two; `--prewarm` starts
+The first call warms an exit and can take a few minutes; `--prewarm` starts
 that at launch instead.
 """
 
@@ -19,24 +19,39 @@ from __future__ import annotations
 
 import json
 import sys
+import time
+from collections.abc import Callable
 from typing import IO, Any
 
-from . import __version__
+from . import __version__, hints
 from .output import use_utf8
 from .scraper import ExitsRefused
 from .server import Worker, locale_problem, search_job, settle_job
 
 SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 MAX_PAGES = 3
+#: Links resolved per page when a call does not say (`serpmaven mcp --links`
+#: changes it). The top five answer in about 8 s; all of them take about 25 s.
+DEFAULT_LINKS = 5
+#: Seconds a call's answer is reused for the same arguments. The server answers
+#: one call at a time, so a client that gave up waiting and asks again would
+#: otherwise wait for the first search and then pay for a second one.
+REPEAT_SECONDS = 600
+#: Answers kept for reuse at most.
+REPEAT_KEEP = 32
 
 TOOL = {
     "name": "google_search",
     "title": "Google search",
+    # A call reads Google and changes nothing of the user's: its browser profiles
+    # are temporary, and a demo sub-user is made once when the server starts,
+    # not by a call. So clients may run it without asking.
+    "annotations": {"readOnlyHint": True, "openWorldHint": True},
     "description": (
         "Search Google through a real browser and the configured proxy. Returns "
         "organic results (position, title, link, snippet), 'People also ask' "
         "questions, related searches, the AI Overview and map places when Google "
-        "shows them. The first call can take a minute or two "
+        "shows them. The first call can take a few minutes "
         "while a proxy exit is warmed up; later calls take seconds."
     ),
     "inputSchema": {
@@ -58,6 +73,16 @@ TOOL = {
                 "type": "string",
                 "description": "Country the results are for, two letters, e.g. us, de.",
             },
+            "links": {
+                "type": "integer",
+                "minimum": 0,
+                "description": (
+                    "How many of the top results on each page need their full URL "
+                    "(default: 5, or the server's --links). Each URL is a separate "
+                    "lookup, so a smaller number answers sooner; 0 skips them. A "
+                    "result without a URL carries its site when Google shows one."
+                ),
+            },
         },
         "required": ["query"],
     },
@@ -65,21 +90,30 @@ TOOL = {
 
 
 def compact(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """What a model needs from the records, without the SERP API bookkeeping."""
+    """What a model needs from the records, without the SERP API bookkeeping.
+
+    A record numbers its results from 1 on every page; here positions run on
+    across the pages of one answer, so page 2 starts after page 1's last result.
+    """
     out: dict[str, Any] = {"results": [], "related_questions": [], "related_searches": []}
     errors = []
     for record in records:
         if "error" in record:
             errors.append(record["error"])
             continue
+        before = len(out["results"])
         for r in record.get("organic_results", []):
-            out["results"].append(
-                {
-                    k: r.get(k)
-                    for k in ("position", "title", "link", "snippet")
-                    if r.get(k) is not None
-                }
-            )
+            result = {
+                k: r.get(k)
+                for k in ("position", "title", "link", "snippet")
+                if r.get(k) is not None
+            }
+            if isinstance(result.get("position"), int):
+                result["position"] += before
+            site = (r.get("displayed_link") or "").split(" ")[0]
+            if "link" not in result and site:
+                result["site"] = site
+            out["results"].append(result)
         overview = (record.get("ai_overview") or {}).get("text")
         if overview and "ai_overview" not in out:
             out["ai_overview"] = overview
@@ -95,8 +129,22 @@ def compact(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class McpServer:
-    def __init__(self, worker: Worker, *, stdout: IO[str] | None = None) -> None:
+    def __init__(
+        self,
+        worker: Worker | None,
+        *,
+        stdout: IO[str] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        unavailable: str | None = None,
+    ) -> None:
+        """`unavailable`: why searches cannot run (a setup error); every call then
+        answers with it, so the agent can tell its user what to fix."""
+        if worker is None and unavailable is None:
+            raise ValueError("a server needs a worker or the reason it has none")
         self._worker = worker
+        self._unavailable = unavailable
+        self._clock = clock
+        self._recent: dict[tuple, tuple[float, dict[str, Any]]] = {}
         # One message per line: "\n" exactly, not the platform's "\r\n".
         self._out = stdout if stdout is not None else use_utf8(sys.stdout, newline="\n")
 
@@ -136,11 +184,14 @@ class McpServer:
     def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "initialize":
             asked = params.get("protocolVersion")
-            return {
+            reply = {
                 "protocolVersion": asked if asked in SUPPORTED_VERSIONS else SUPPORTED_VERSIONS[0],
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "serpmaven", "version": __version__},
             }
+            if self._unavailable:
+                reply["instructions"] = f"Searches cannot run: {self._unavailable}"
+            return reply
         if method == "ping":
             return {}
         if method == "tools/list":
@@ -152,33 +203,40 @@ class McpServer:
     def _call(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("name") != TOOL["name"]:
             raise _RpcError(-32602, f"unknown tool: {params.get('name')}")
-        args = params.get("arguments") or {}
-        query = str(args.get("query") or "").strip()
-        if not query:
-            return _tool_error("query is required")
+        if self._unavailable:
+            return _tool_error(f"serpmaven cannot search: {self._unavailable}")
+        key = _arguments(params.get("arguments") or {})
+        if isinstance(key, str):
+            return _tool_error(key)
+        query, pages, hl, gl, links = key
+        now = self._clock()
+        kept = self._recent.get(key)
+        if kept and now - kept[0] < REPEAT_SECONDS:
+            return kept[1]
         try:
-            pages = int(args.get("pages", 1))
-        except (TypeError, ValueError):
-            return _tool_error("pages must be an integer")
-        pages = max(1, min(MAX_PAGES, pages))
-        hl, gl = str(args.get("hl") or "") or None, str(args.get("gl") or "") or None
-        problem = locale_problem(hl, gl)
-        if problem:
-            return _tool_error(problem)
-        try:
-            records = self._worker.call(search_job(query, pages, hl, gl))
+            records = self._worker.call(search_job(query, pages, hl, gl, links))
         except ExitsRefused as exc:
             return _tool_error(str(exc))
         except Exception as exc:
-            return _tool_error(f"{type(exc).__name__}: {exc}")
+            return _tool_error(hints.explain(exc) or f"{type(exc).__name__}: {exc}")
         # The worker thread does the upkeep while this one writes the answer.
         self._worker.after(settle_job)
         body = compact(records)
-        return {
+        answer = {
             "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
             "isError": not (body["results"] or body.get("ai_overview") or body.get("places"))
             and bool(body.get("errors")),
         }
+        # Only a whole answer is reused: one with a refused page is asked again.
+        if not body.get("errors"):
+            self._keep(key, self._clock(), answer)
+        return answer
+
+    def _keep(self, key: tuple, now: float, answer: dict[str, Any]) -> None:
+        self._recent = {k: v for k, v in self._recent.items() if now - v[0] < REPEAT_SECONDS}
+        self._recent[key] = (now, answer)
+        while len(self._recent) > REPEAT_KEEP:
+            del self._recent[next(iter(self._recent))]
 
     def _write(self, message: dict[str, Any]) -> None:
         self._out.write(json.dumps(message, ensure_ascii=False) + "\n")
@@ -189,6 +247,27 @@ class _RpcError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _arguments(args: dict[str, Any]) -> tuple | str:
+    """(query, pages, hl, gl, links) from a call's arguments, or what is wrong
+    with them."""
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return "query is required"
+    try:
+        pages = int(args.get("pages", 1))
+    except (OverflowError, TypeError, ValueError):
+        return "pages must be an integer"
+    pages = max(1, min(MAX_PAGES, pages))
+    links = args.get("links")
+    if links is not None and (not isinstance(links, int) or isinstance(links, bool) or links < 0):
+        return "links must be an integer, 0 or more"
+    hl, gl = str(args.get("hl") or "") or None, str(args.get("gl") or "") or None
+    problem = locale_problem(hl, gl)
+    if problem:
+        return problem
+    return query, pages, hl, gl, links
 
 
 def _tool_error(text: str) -> dict[str, Any]:

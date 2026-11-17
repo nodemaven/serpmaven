@@ -113,7 +113,10 @@ DONOR_REFUSALS = 2
 #: set has fresh ones to hand over to instead of one set overwritten in place.
 DONOR_SLOTS = 4
 #: Served queries on an exit between renewals of the cookie set, by default.
-RENEW_EVERY = 25
+#: An exit started from a set gets results as good as one warmed up from scratch,
+#: at a fraction of the traffic, so the first set is taken early: a short session,
+#: such as an agent's, rarely reaches a large number before an exit is refused.
+RENEW_EVERY = 5
 
 
 def _retry_copy(copy, dest: str, attempts: int) -> None:
@@ -227,12 +230,29 @@ class Settings:
     #: Country the results are for, as Google's `gl` (e.g. "us"); unset, Google
     #: picks it from the exit. Applies to results pages opened directly.
     gl: str | None = None
+    #: Where the results are searched from, as a canonical place name
+    #: ("Austin,Texas,United States"), sent as Google's `uule`.
+    location: str | None = None
+    #: Google's `tbs` filters as they are, e.g. "qdr:w" for the past week.
+    tbs: str | None = None
+    #: False sends `pws=0`: results without personalization.
+    personalized: bool = True
+    #: False sends `nfpr=1`: a misspelt query is searched as typed.
+    autocorrect: bool = True
+    #: Only documents from these countries (`cr`, e.g. "countryUS") or in these
+    #: languages (`lr`, e.g. "lang_en").
+    cr: str | None = None
+    lr: str | None = None
     #: Directory to keep every page's HTML in, gzipped, for debugging a parse.
     #: The pages carry the exit's location, so keep them out of anything public.
     save_html: str | None = None
     #: Ask Google's /goto redirect for each result's destination, from a proxy
     #: session of its own; pages no longer carry the URLs themselves.
     resolve_links: bool = True
+    #: Ask the links of the first that many organic results on each page only
+    #: (0: none, None: all). Fewer links answer sooner and cost less traffic;
+    #: a call to `search` or `start_search` can ask its own number.
+    links: int | None = None
     #: Identities to warm in the background once the current one is served,
     #: so the next exit is ready when this one is retired. Each costs a
     #: warm-up's traffic whether it is used or not.
@@ -309,6 +329,8 @@ class Settings:
             raise ValueError("clone_max_age must be positive")
         if self.restart_every < 0:
             raise ValueError("restart_every must be 0 or more")
+        if self.links is not None and self.links < 0:
+            raise ValueError("links must be 0 or more")
         if self.renew_donors_every < 0:
             raise ValueError("renew_donors_every must be 0 or more")
         if self.clones and (self.donors or self.renew_donors_every):
@@ -330,6 +352,28 @@ class Settings:
             low, high = getattr(self, name)
             if not 0 <= low <= high:
                 raise ValueError(f"{name} must be a (low, high) pair with 0 <= low <= high")
+        if self.location is not None:
+            browser.uule(self.location)  # a name it cannot encode fails here, not mid-run
+
+
+def filter_params(s: Settings) -> dict[str, str]:
+    """What a record's `search_parameters` carry for these settings' location and
+    filters (`location`, `tbs`, `pws`, `nfpr`, `cr`, `lr`), as written there."""
+    shown = {
+        k: v
+        for k, v in browser.url_params(
+            s.location,
+            s.tbs,
+            personalized=s.personalized,
+            autocorrect=s.autocorrect,
+            cr=s.cr,
+            lr=s.lr,
+        ).items()
+        if k != "uule"
+    }
+    if s.location:
+        shown["location"] = s.location
+    return shown
 
 
 @dataclass
@@ -1069,6 +1113,8 @@ class Scraper:
         the next query while a caller waits for them (`PendingLinks.wait`)."""
         if links is not None and links < 0:
             raise ValueError("links must be 0 or more")
+        if links is None:
+            links = self.settings.links
         self.settle()
         # Jobs a caller of an earlier start_search waited for, or did not.
         self._link_jobs = {k: job for k, job in self._link_jobs.items() if not job.done()}
@@ -1104,6 +1150,21 @@ class Scraper:
 
     def _gl(self) -> str | None:
         return self._locale.get("gl") or self.settings.gl
+
+    @property
+    def _params(self) -> dict[str, str]:
+        s = self.settings
+        return browser.url_params(
+            s.location,
+            s.tbs,
+            personalized=s.personalized,
+            autocorrect=s.autocorrect,
+            cr=s.cr,
+            lr=s.lr,
+        )
+
+    def _record_params(self) -> dict[str, str]:
+        return filter_params(self.settings)
 
     def settle(self) -> None:
         """Run the upkeep the last `search(settle=False)` left, if any."""
@@ -1269,6 +1330,7 @@ class Scraper:
             elapsed=0.0,
             hl=self._hl(),
             gl=self._gl(),
+            params=self._record_params(),
             exit_info={"session": None},
             error=last_error or f"refused on {s.max_exits_per_query} exits: {reason}",
         )
@@ -1403,6 +1465,7 @@ class Scraper:
             url=fetched.url,
             hl=self._hl(),
             gl=self._gl(),
+            params=self._record_params(),
             elapsed=time.monotonic() - started,
             exit_info=identity.info(self.settings.warmup, page_bytes),
             parsed=parsed,
@@ -1412,7 +1475,8 @@ class Scraper:
         if saved:
             record["search_metadata"]["raw_html_file"] = saved
         resolver = self._links()
-        if resolver is not None and self._link_limit != 0:
+        limit = self._link_limit if self._link_limit is not None else self.settings.links
+        if resolver is not None and limit != 0:
             if self._link_pool is None:
                 self._link_pool = ThreadPoolExecutor(LINK_WORKERS, thread_name_prefix="gbs-links")
             make = getattr(identity.session, "link_client", None)
@@ -1421,7 +1485,7 @@ class Scraper:
                 self._event, "link_lookup_failed", identity, query=query, page=page
             )
             self._link_jobs[id(record)] = self._link_pool.submit(
-                _fill_links, resolver, record, fetched.html, client, self._link_limit, failed
+                _fill_links, resolver, record, fetched.html, client, limit, failed
             )
         return record
 
@@ -1448,6 +1512,7 @@ class Scraper:
             elapsed=0.0,
             hl=self._hl(),
             gl=self._gl(),
+            params=self._record_params(),
             exit_info=identity.info(self.settings.warmup),
             error=error,
         )
@@ -1536,6 +1601,7 @@ class Scraper:
                 input_mode=s.input,
                 hl=s.hl,
                 gl=s.gl,
+                params=self._params,
             ),
             relay,
             browser_proxy,
@@ -1605,6 +1671,7 @@ class Scraper:
                     input_mode=s.input,
                     hl=s.hl,
                     gl=s.gl,
+                    params=self._params,
                     **donor,
                 ),
                 relay,

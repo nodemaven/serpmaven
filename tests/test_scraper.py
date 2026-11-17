@@ -6,7 +6,7 @@ import tempfile
 import pages
 import pytest
 
-from serpmaven.browser import Fetched, results_url
+from serpmaven.browser import Fetched, results_url, url_params, uule
 from serpmaven.proxy import ProxyTemplate
 from serpmaven.scraper import (
     PREWARM_QUERIES,
@@ -1248,6 +1248,54 @@ def test_results_url_carries_language_and_country():
     )
 
 
+def test_location_and_tbs_reach_the_browser_and_the_record():
+    settings = Settings(
+        location="Austin,Texas,United States",
+        tbs="qdr:w",
+        gap_seconds=(0, 0),
+        dwell_seconds=(0, 0),
+    )
+    records = list(scraper([[SERVED]], settings).run(["a"]))
+    assert FakeSession.opened[0].options["params"] == {
+        "uule": "w+CAIQICIaQXVzdGluLFRleGFzLFVuaXRlZCBTdGF0ZXM",
+        "tbs": "qdr:w",
+    }
+    parameters = records[0]["search_parameters"]
+    assert parameters["location"] == "Austin,Texas,United States"
+    assert parameters["tbs"] == "qdr:w"
+    plain = list(scraper([[SERVED]], Settings(gap_seconds=(0, 0), dwell_seconds=(0, 0))).run(["a"]))
+    assert FakeSession.opened[0].options["params"] == {}
+    assert "location" not in plain[0]["search_parameters"]
+
+
+def test_results_url_carries_a_location_and_filters_as_browsers_send_them():
+    url = results_url("pizza", extra=url_params("Austin,Texas,United States", "qdr:w"))
+    assert url == (
+        "https://www.google.com/search?q=pizza&hl=en"
+        "&uule=w+CAIQICIaQXVzdGluLFRleGFzLFVuaXRlZCBTdGF0ZXM&tbs=qdr:w"
+    )
+    for bad in ("", "x" * 64):
+        with pytest.raises(ValueError, match="location"):
+            uule(bad)
+
+
+def test_unpersonalized_uncorrected_country_and_language_reach_the_url_and_the_record():
+    settings = Settings(
+        personalized=False,
+        autocorrect=False,
+        cr="countryUS",
+        lr="lang_en",
+        gap_seconds=(0, 0),
+        dwell_seconds=(0, 0),
+    )
+    records = list(scraper([[SERVED]], settings).run(["a"]))
+    expected = {"pws": "0", "nfpr": "1", "cr": "countryUS", "lr": "lang_en"}
+    assert FakeSession.opened[0].options["params"] == expected
+    assert {k: records[0]["search_parameters"][k] for k in expected} == expected
+    url = results_url("pizza", extra=url_params(personalized=False, autocorrect=False))
+    assert url.endswith("&hl=en&pws=0&nfpr=1")
+
+
 def test_an_exit_serving_pages_unrelated_to_their_queries_is_retired_as_poisoned():
     # The fixture's titles are about swimming; three multi-word queries about
     # something else in a row look like the "poisoned" pages Google is
@@ -1839,8 +1887,28 @@ def test_links_pending_counts_only_the_results_whose_links_were_asked():
         s.close()
 
 
+def test_the_link_limit_in_settings_applies_to_runs_and_calls_that_do_not_ask_their_own():
+    settings = Settings(gap_seconds=(0, 0), dwell_seconds=(0, 0), links=1)
+    s = _gated([[SERVED, SERVED, SERVED] for _ in range(3)], settings)
+    _GatedResolver.gate.set()
+    try:
+        list(s.run(["a"]))  # the command line's path
+        s.search("b")
+        s.search("c", links=2)  # a call's own number wins
+    finally:
+        s.close()
+    assert _GatedResolver.asked == [[1], [1], [1, 2]]
+
+
 def _held_first(record, n):
     return _held({"organic_results": record["organic_results"][:n]})
+
+
+def test_settings_refuse_a_negative_link_limit():
+    # A negative number would slice from the end: all results but the last.
+    with pytest.raises(ValueError, match="links"):
+        Settings(links=-1)
+    assert Settings(links=0).links == 0
 
 
 def test_a_negative_links_is_refused_before_a_query():

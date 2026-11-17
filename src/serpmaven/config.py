@@ -1,9 +1,10 @@
 """A proxy login saved once by `serpmaven login`, read by every later run.
 
 The file holds either NodeMaven proxy credentials or a proxy URL for any other
-provider. It is plain JSON in the user's config folder, readable by its owner
-only, so the password is not encrypted: anyone who can read the user's files
-can read it, as with any saved credential of a command-line tool.
+provider. It is plain JSON in the user's config folder; on Linux and macOS it
+is readable by its owner only, on Windows it takes the folder's permissions.
+The password is not encrypted: anyone who can read the user's files can read
+it, as with any saved credential of a command-line tool.
 
 The environment and the command line always win over the file.
 """
@@ -45,13 +46,15 @@ def load() -> dict[str, Any]:
 
 
 def save(data: dict[str, Any]) -> Path:
-    """Write the login, readable by its owner only, and return where it went."""
+    """Write the login and return where it went."""
     folder = directory()
     folder.mkdir(parents=True, exist_ok=True)
     target = path()
     # Created with owner-only permissions on POSIX before anything is written,
-    # so the password is never in a file others can read; on Windows the
-    # per-user config folder is already private to the user.
+    # so the password is never in a file others can read. On Windows the file
+    # takes its folder's permissions: in the default %APPDATA% folder that is
+    # the user, SYSTEM and administrators; a folder set by SERPMAVEN_CONFIG_DIR
+    # keeps whatever permissions it has.
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
