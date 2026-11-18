@@ -18,8 +18,10 @@ since the other workers would only spend traffic finding the same thing.
 Queries nobody answered by then are listed in `not_run`.
 
 The cookie sets are shared for the same reason: a set renewed on any worker's
-served exit is worth as much to every worker, and a refusal on one moves them
-all to the next set.
+served exit is worth as much to every worker. First-query refusals count against
+the set in use on every worker alike; after DONOR_REFUSALS of them in a row the
+next set takes over for the exits started from then on, and once every set has
+been refused that way new exits warm up until a renewal brings a set back.
 """
 
 from __future__ import annotations

@@ -229,7 +229,7 @@ def search_job(
     `hl` and `gl` override the scraper's for this query; `links` is how many
     organic results per page get their link resolved (None: all).
 
-    The upkeep the query leaves (a restart, a cookie-set renewal) is not done here:
+    The upkeep the query leaves (a browser restart) is not done here:
     queue `settle_job` once the answer is out, so the caller does not wait for it.
     """
     return _query_job("search", query, pages, hl, gl, links)

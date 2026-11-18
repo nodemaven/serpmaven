@@ -807,9 +807,10 @@ class Scraper:
         """One query, keeping the identity open for the next call (serve, MCP).
 
         With `settle=False` the upkeep a served query leaves behind - a scheduled
-        restart, renewing the cookie set, retiring a capped exit - waits for
-        `settle()`, so a server can answer first. A restart closes and reopens the
-        browser, which can take longer than the search itself.
+        restart, retiring a capped exit - waits for `settle()`, so a server can
+        answer first; a due renewal of the cookie set is done before the answer.
+        A restart closes and reopens the browser, which can take longer than the
+        search itself.
 
         `hl` and `gl` override the settings for this query; its results page is
         then opened directly whatever `direct` says. `links` asks the links of
