@@ -219,12 +219,6 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         help="queries before a proxy IP is retired even if still served (default 300)",
     )
     p.add_argument(
-        "--no-clone-cache",
-        action="store_true",
-        help="copies carry the cookie jar only, not the browser cache (by default they "
-        "carry both, until two copies with the cache are refused)",
-    )
-    p.add_argument(
         "--restart-every",
         type=int,
         default=50,
@@ -239,28 +233,6 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         metavar="N",
         help="proxy IPs to warm in the background while the current one serves, so a "
         "retired one is replaced without waiting (default 0; each costs a warm-up)",
-    )
-    p.add_argument(
-        "--clone",
-        type=int,
-        default=10,
-        metavar="N",
-        help="with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
-        "served one's cookies instead of warming each one (default 10; 0 turns it off)",
-    )
-    p.add_argument(
-        "--clone-max-age",
-        type=float,
-        default=180.0,
-        metavar="MIN",
-        help="minutes copied cookies stay in use (default 180)",
-    )
-    p.add_argument(
-        "--clone-refusals",
-        type=int,
-        default=1,
-        metavar="N",
-        help="copies refused on their first query, in a row, that end the copying (default 1)",
     )
     p.add_argument(
         "--input",
@@ -322,7 +294,7 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         help="start every new proxy IP with the Google cookies in FILE (JSON) instead of "
         "warming it up; repeat for more files, the next one taking over after two proxy "
         "IPs in a row are refused on their first query, and warm-ups again once every "
-        "file has been refused that way; turns --clone off",
+        "file has been refused that way",
     )
     p.add_argument(
         "--renew-cookies",
@@ -331,7 +303,7 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         metavar="N",
         help="every N served queries on a proxy IP, its Google cookies replace the set new "
         "proxy IPs start from, so the set stays fresh; without --cookies the first renewal "
-        f"ends the warm-ups (default {RENEW_EVERY}; 0 turns it off and brings back --clone)",
+        f"ends the warm-ups (default {RENEW_EVERY}; 0 turns it off)",
     )
     p.add_argument(
         "--cookies-out",
@@ -460,12 +432,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         pages=pages,
         max_queries_per_exit=args.max_per_exit,
         restart_every=args.restart_every,
-        clone_cache=not args.no_clone_cache,
         spare=args.spare,
-        # Cookie sets replace the copies of a served profile.
-        clones=0 if args.cookies or args.renew_cookies else args.clone,
-        clone_max_age=args.clone_max_age * 60,
-        clone_refusals=args.clone_refusals,
         input=args.input,
         direct=args.direct,
         stop_after_read=args.stop_after_read,

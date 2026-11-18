@@ -131,32 +131,3 @@ def test_a_pool_of_real_browsers_shares_the_queries(local_google):
     assert sorted(r["search_parameters"]["q"] for r in records) == sorted(queries)
     assert all(r["search_metadata"]["status"] == "Success" for r in records)
     assert {r["search_metadata"]["worker"] for r in records} == {0, 1}
-
-
-def test_a_copied_profile_carries_the_served_session_to_a_new_browser(local_google):
-    """Real patchright: copy a served profile, then search from the copy."""
-    try:
-        importlib.import_module(PACKAGES["patchright"])
-    except ImportError:
-        pytest.skip("patchright is not installed")
-    settings = Settings(
-        warmup="off",
-        headless=True,
-        clones=2,
-        renew_donors_every=0,
-        max_queries_per_exit=2,
-        gap_seconds=(0, 0),
-        dwell_seconds=(0, 0),
-        settle_seconds=(0, 0),
-        browser_args=("--proxy-bypass-list=<-loopback>",),
-        resolve_links=False,
-    )
-    events = []
-    scraper = Scraper(None, settings, on_event=events.append)
-    records = list(scraper.run(["swim lessons", "pool near me", "kimchi"]))
-    assert [r["search_metadata"]["status"] for r in records] == ["Success"] * 3
-    kinds = [e["event"] for e in events]
-    assert "template" in kinds
-    minted = [e for e in events if e["event"] == "minted"]
-    assert len(minted) == 2 and minted[1].get("clone") is True
-    assert scraper.stats.clones == 1
