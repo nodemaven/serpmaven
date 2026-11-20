@@ -6,10 +6,10 @@ side by side multiplies throughput by roughly that number until the machine
 runs out of CPU or memory for the browsers.
 
 Each worker is an ordinary `Scraper` with its own identities, spares and
-traffic count. The workers share the queue of queries, one breaker and one
-cookie-jar template. Playwright's sync API is bound to the thread that starts
-it, and every worker starts its browsers on its own thread, so no browser is
-shared across threads.
+traffic count. The workers share the queue of queries, one breaker, the
+hybrid's request headers and one store of cookie sets. Playwright's sync API is
+bound to the thread that starts it, and every worker starts its browsers on its
+own thread, so no browser is shared across threads.
 
 The breaker counts refused exits across the pool and any served page resets
 it: one worker drawing bad exits while another keeps being served is not a bad
@@ -17,9 +17,11 @@ hour. When nobody is served for `breaker` exits in a row the whole pool stops,
 since the other workers would only spend traffic finding the same thing.
 Queries nobody answered by then are listed in `not_run`.
 
-The template is shared for the same reason: a served cookie jar is worth as
-much to every worker, and a worker whose copy ran out should start from the
-other worker's jar rather than warm fresh exits.
+The cookie sets are shared for the same reason: a set renewed on any worker's
+served exit is worth as much to every worker. First-query refusals count against
+the set in use on every worker alike; after DONOR_REFUSALS of them in a row the
+next set takes over for the exits started from then on, and once every set has
+been refused that way new exits warm up until a renewal brings a set back.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 from .hybrid import Headers
-from .scraper import Breaker, Donors, ExitsRefused, Scraper, Stats, Templates
+from .scraper import Breaker, Donors, ExitsRefused, Scraper, Stats
 
 
 class WorkerFailed(ExitsRefused):
@@ -91,31 +93,22 @@ class Pool:
         first = self._scrapers[0].settings
         for scraper in self._scrapers[1:]:
             s = scraper.settings
-            if (s.clones, s.clone_max_age, s.clone_refusals, s.clone_cache, s.breaker) != (
-                first.clones,
-                first.clone_max_age,
-                first.clone_refusals,
-                first.clone_cache,
-                first.breaker,
-            ):
+            if s.breaker != first.breaker:
                 raise ValueError(
-                    "workers share one cookie template and one breaker, so clones, "
-                    "clone_max_age, clone_refusals, clone_cache and breaker must be the "
-                    "same for every worker"
+                    "workers share one breaker, so breaker must be the same for every worker"
                 )
             if (s.donors, s.donors_out) != (first.donors, first.donors_out):
                 raise ValueError(
                     "workers share one store of cookie sets, so donors and donors_out "
                     "must be the same for every worker"
                 )
-        templates = Templates(first.clones, first.clone_max_age, first.clone_refusals)
         breaker = Breaker(first.breaker)
         headers = Headers()
         # One store of cookie sets: a refusal or a renewal on any worker moves
         # the set every worker starts its next exit from.
         donors = Donors(first.donors, first.donors_out)
         for scraper in self._scrapers:
-            scraper.share(breaker, templates, headers, donors)
+            scraper.share(breaker, headers, donors)
         threads = [
             threading.Thread(
                 target=self._work,
@@ -141,7 +134,6 @@ class Pool:
             self._stop.set()
             for t in threads:
                 t.join()
-            templates.drop("run finished", lambda event: None)
         while not todo.empty():
             self.not_run.append(todo.get_nowait())
         if stopped:
@@ -190,7 +182,6 @@ def merge_stats(parts: Iterable[Stats]) -> Stats:
     for s in parts:
         for name in (
             "identities",
-            "clones",
             "pages_served",
             "queries_failed",
             "exits_refused",

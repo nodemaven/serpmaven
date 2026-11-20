@@ -57,7 +57,7 @@ ARCHIVE_SIZE = 500
 ASYNC_QUEUED_MAX = 50
 STARTUP_TIMEOUT_S = 60
 #: How long `stop()` waits for the job in hand. Upkeep after a query - a browser
-#: restart or a template copy, each with a 40-60 s settle - can take this long.
+#: restart with its 40-60 s settle - can take this long.
 STOP_TIMEOUT_S = 120
 
 
@@ -229,7 +229,7 @@ def search_job(
     `hl` and `gl` override the scraper's for this query; `links` is how many
     organic results per page get their link resolved (None: all).
 
-    The upkeep the query leaves (a template copy, a restart) is not done here:
+    The upkeep the query leaves (a browser restart) is not done here:
     queue `settle_job` once the answer is out, so the caller does not wait for it.
     """
     return _query_job("search", query, pages, hl, gl, links)

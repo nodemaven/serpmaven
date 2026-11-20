@@ -400,27 +400,14 @@ its memory from growing over a long hold. A browser error on a search is retried
 once on the same proxy IP before it is dropped; a network error, running out of
 memory or a crashed browser drops it at once.
 
-**Copying cookies.** With `--renew-cookies 0`, the command line copies the
-cookies of the first proxy IP Google serves and starts new proxy IPs from that
-copy, on new sticky sessions, instead of warming each one; all workers share
-the copy. Google's acceptance follows the cookies more than the address, so a
-copy usually starts out served and costs a few MB instead of a full warm-up. A
-copy waits 40-60 seconds after its browser starts before the first search.
-
-**Copying the cache.** Pages get cheaper as a proxy IP is held, because the
-browser cache fills with Google's shared scripts and images. Copies carry that
-cache too, so a new proxy IP starts with cheap pages, and the copy is refreshed
-from the held one at each browser restart, when its cache is warm. If two
-copies carrying the cache are refused on their first search, the rest of the
-run copies cookies only (`--no-clone-cache` does that from the start).
-
 **Starting from saved cookies.** `--cookies FILE` gives every new proxy IP the
 Google cookies of a browser Google already serves, so it skips the warm-up; the
 file can come from another machine. `--renew-cookies N` replaces that set with
 the cookies of a served proxy IP every N queries, so it stays fresh, and without
-`--cookies` it ends the warm-ups after the first renewal. It is on by default,
-every 5 queries, so a run warms up its first proxy IP and rarely another;
-`--renew-cookies 0` goes back to copies of the first served profile.
+`--cookies` the first renewal that yields Google's cookies ends the warm-ups. It is
+on by default, every 5 queries, so a run warms up its first proxy IP and rarely
+another. `--renew-cookies 0` turns renewal off: sets given with `--cookies` are
+still used until they are refused, and without them every new proxy IP warms up.
 `--cookies-out DIR` saves each renewed set for the next run, readable by its
 owner only. If every set is refused in turn, new proxy IPs are warmed up again,
 and with `--renew-cookies` the next renewal brings the sets back. A file is a
@@ -468,12 +455,8 @@ The defaults come from measurements in
 | `--no-personalization` | | Results without personalization (`pws=0`) |
 | `--no-autocorrect` | | Search a misspelt query as typed (`nfpr=1`) |
 | `--cr COUNTRIES`, `--lr LANGUAGES` | unset | Only documents from these countries (`countryUS`) or in these languages (`lang_en`) |
-| `--clone N` | 10 | With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
-| `--clone-max-age` | 180 | Minutes copied cookies stay in use |
-| `--clone-refusals N` | 1 | Copies refused in a row on their first query that end the copying |
-| `--no-clone-cache` | | Copies carry cookies only, not the browser cache |
-| `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
-| `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
+| `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way |
+| `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns renewal off: without `--cookies`, every new proxy IP warms up |
 | `--cookies-out DIR` | | Write each renewed cookie set to DIR, for the next run's `--cookies` |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |
 | `--spare N` | 0 | Proxy IPs warmed in the background so a retired one is replaced at once; each costs a warm-up |

@@ -197,19 +197,13 @@ def test_a_bad_output_path_still_deletes_the_demo_sub_user(tmp_path, monkeypatch
     assert closed == [False]
 
 
-def test_copies_are_on_by_default_and_can_be_turned_off():
-    parser = cli._parser()
-    assert parser.parse_args(["search", "q", "--no-proxy"]).clone == 10
-    assert parser.parse_args(["search", "q", "--no-proxy", "--clone", "0"]).clone == 0
-
-
-def test_cookie_sets_are_renewed_by_default_and_zero_brings_copies_back():
+def test_cookie_sets_are_renewed_by_default_and_zero_turns_renewal_off():
     parse = cli._parser().parse_args
     settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
-    assert settings.renew_donors_every == 5 and settings.clones == 0
+    assert settings.renew_donors_every == 5
     args = parse(["search", "q", "--no-proxy", "--renew-cookies", "0"])
     settings = cli._build(args, None)[0].settings
-    assert settings.renew_donors_every == 0 and settings.clones == 10
+    assert settings.renew_donors_every == 0
 
 
 def test_links_resolves_all_by_default_five_for_mcp_and_refuses_a_negative():
