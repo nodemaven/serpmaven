@@ -234,7 +234,7 @@ serpmaven search -f queries.txt --nodemaven-demo --traffic-limit-mb 300 -o resul
 <br>
 
 ```bash
-serpmaven search "best running shoes" --no-proxy
+serpmaven search "best running shoes" --no-proxy --output data.json
 ```
 
 Google then sees one address for every query, so it starts answering with
