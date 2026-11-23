@@ -197,8 +197,10 @@ def test_an_interstitial_or_a_redirect_back_to_google_leaves_the_link_empty(monk
     answers = {
         "/url?sa=t&source=web&url=AAA&ved=1": (200, "", interstitial("AAA")),
         "/url?sa=t&source=web&url=BBB&ved=2": (302, "https://www.google.com/goto?url=BBB", ""),
-        # The held link asked again only names Google's own redirect once more.
+        # The held link asked again only names Google's own redirect once more,
+        # and so does the /goto asked after the ping that named no destination.
         "/goto?url=AAA": (302, "https://www.google.com/goto?url=AAA", ""),
+        "/goto?url=BBB": (302, "https://www.google.com/goto?url=BBB", ""),
     }
     resolver = LinkResolver(None, relay_factory=None)
     results = [
@@ -584,3 +586,43 @@ def test_fill_writes_each_link_as_soon_as_its_request_is_answered():
         slow.set()
         filling.join(5)
     assert results[1]["link"] == "https://bbb.example/"
+
+
+def test_an_empty_ping_is_followed_by_the_goto_on_the_same_exit(monkeypatch):
+    results, asked, slept, resolver = held_page_resolver(
+        monkeypatch,
+        {
+            PING_A: [(204, "", "")],
+            "/goto?url=AAA": [(302, "https://aaa.example/page", "")],
+            "/goto?url=BBB": [(200, "", interstitial("BBB", 3)), (302, "https://bbb.example/", "")],
+        },
+    )
+    assert [r["link"] for r in results] == ["https://aaa.example/page", "https://bbb.example/"]
+    # After one empty ping the page's other links skip the ping and ask /goto.
+    assert asked == [PING_A, "/goto?url=AAA", "/goto?url=BBB", "/goto?url=BBB"]
+    assert len(slept) == 1 and resolver.resolved == 2 and resolver.enabled
+
+
+def test_a_ping_naming_no_destination_still_asks_the_goto_but_keeps_pinging(monkeypatch):
+    results, asked, _, _ = held_page_resolver(
+        monkeypatch,
+        {
+            PING_A: [(200, "", "<html>Loading...</html>")],
+            "/goto?url=AAA": [(302, "https://aaa.example/", "")],
+            PING_B: [(200, "", ping_answer("https://bbb.example/"))],
+        },
+    )
+    assert [r["link"] for r in results] == ["https://aaa.example/", "https://bbb.example/"]
+    assert asked == [PING_A, "/goto?url=AAA", PING_B]
+
+
+def test_a_refused_goto_after_an_empty_ping_ends_the_page(monkeypatch):
+    results, asked, _, resolver = held_page_resolver(
+        monkeypatch,
+        {
+            PING_A: [(204, "", "")],
+            "/goto?url=AAA": [(302, "https://www.google.com/sorry/index?continue=x", "")],
+        },
+    )
+    assert [r["link"] for r in results] == [None, None]
+    assert asked == [PING_A, "/goto?url=AAA"] and resolver.enabled

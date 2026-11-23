@@ -9,9 +9,11 @@ resolution does not touch the warmed browser session, and its traffic goes
 through a relay so it is counted like everything else.
 
 A page that came over HTTP is resolved on its own exit instead: each result's
-anchor carries a ping URL, which Google answers there with a small page naming
-the destination. Its /goto answers with a destination only for the few results
-it prefetches, and asked from a fresh exit it is refused.
+anchor carries a ping URL, which Google may answer there with a small page
+naming the destination. When the ping answers with nothing (204, or a page that
+names no destination), the result's /goto is asked on the same exit; asked from
+a fresh exit it is refused. After an empty ping the rest of that page goes
+straight to /goto.
 
 Google answers only a few of a page's links at once, through the ping URL or
 /goto alike; the rest get a "Verifying your request" page that reloads the same
@@ -48,9 +50,10 @@ PING_BUDGET_S = 30.0
 #: Google answers some result links with a "Verifying your request" page that
 #: refreshes to the same /goto after a delay, and that /goto then redirects to
 #: the result. Seconds a page may spend asking those links again.
-HELD_BUDGET_S = 45.0
+HELD_BUDGET_S = 75.0
 #: The longest refresh delay worth waiting out; a link held longer stays empty.
-HELD_WAIT_MAX_S = 30
+#: Google's delays on this page run up to about a minute.
+HELD_WAIT_MAX_S = 60
 #: Times a held link is asked again before it is left empty.
 HELD_ROUNDS = 2
 #: Seconds added to the refresh delay before asking again.
@@ -114,6 +117,18 @@ def held_refresh(body: str) -> tuple[int, str] | None:
     if "/goto?" not in body or not (match := _HELD.search(body)):
         return None
     return int(match.group(1)), html.unescape(match.group(2))
+
+
+def _read(answer: tuple[int, str, str]) -> tuple[str | None, tuple[int, str] | None]:
+    """The destination a ping or /goto answer names, or the hold of a "Verifying
+    your request" page; (None, None) when it gives neither."""
+    status, location, body = answer
+    if 300 <= status < 400:
+        return _destination(location), None
+    if status == 200:
+        link = ping_destination(body)
+        return link, None if link else held_refresh(body)
+    return None, None
 
 
 def _refused(location: str) -> bool:
@@ -264,46 +279,67 @@ class LinkResolver:
 
         `get(path, timeout)` asks Google's host for `path` there within
         `timeout` seconds and returns the status, the Location and the body, or
-        None on an error. Each result is asked
-        through its anchor's ping URL. A refusal or an error ends asking for
-        this page, as does `PING_BUDGET_S`; the resolver itself stays on, since
-        another exit is another answer. A result Google holds on its
-        "Verifying your request" page is asked again once that page's own delay
-        has passed (`_follow_held`). A result left without a link is counted
-        by `fill`, which tries it next, or here when `fill` will not.
+        None on an error. Each result is asked through its anchor's ping URL,
+        and through its /goto when the ping names no destination; once a ping
+        has answered with nothing, the page's other results go straight to
+        /goto. A refusal or an error ends asking for this page, as does
+        `PING_BUDGET_S`; the resolver itself stays on, since another exit is
+        another answer. A result Google holds on its "Verifying your request"
+        page is asked again once that page's own delay has passed
+        (`_follow_held`). A result left without a link is counted by `fill`,
+        which tries it next, or here when `fill` will not.
         """
         pings = ping_paths(page)
         deadline = time.monotonic() + PING_BUDGET_S
         held: list[tuple[float, dict[str, Any], str, int]] = []
+        pings_empty = False
         for result in results:
             redirect = result.get("redirect_link") or ""
             if result.get("link") is not None or "/goto?" not in redirect:
                 continue
-            path = pings.get("/goto?" + redirect.split("/goto?", 1)[1])
-            if path is None:
+            goto = "/goto?" + redirect.split("/goto?", 1)[1]
+            ping = pings.get(goto)
+            if ping is None:
                 continue
+            asked = self._ask([goto] if pings_empty else [ping, goto], get, deadline)
+            if asked is None:
+                return  # refused, or an error: nothing more from this exit
+            link, hold, ping_was_empty = asked
+            pings_empty = pings_empty or ping_was_empty
+            if hold is not None and hold[0] <= HELD_WAIT_MAX_S:
+                held.append((time.monotonic() + hold[0], result, hold[1], 1))
+            elif link or time.monotonic() < deadline:
+                self._count(result, link)
+            else:
+                break  # out of budget; the links already held still get their turn
+        self._follow_held(held, get)
+
+    def _ask(
+        self,
+        paths: list[str],
+        get: Callable[[str, float], tuple[int, str, str] | None],
+        deadline: float,
+    ) -> tuple[str | None, tuple[int, str] | None, bool] | None:
+        """Ask `paths` in turn (a ping, then the /goto) until one names a
+        destination or a hold. Returns the link, the hold and whether the first
+        path, a ping, answered with an empty body; None on a refusal or an
+        error. Stops early, with neither, once the budget is spent."""
+        link, hold, empty = None, None, False
+        for i, path in enumerate(paths):
             # Capped: on some clock readings (t + budget) - t comes out a hair
             # above the budget in floating point.
             left = min(PING_BUDGET_S, deadline - time.monotonic())
             if left <= 0:
-                break  # the links already held still get their turn
+                break
             answer = get(path, left)
-            if answer is None:
-                return
-            status, location, body = answer
-            if _refused(location):
-                return
-            link = None
-            if 300 <= status < 400:
-                link = _destination(location)
-            elif status == 200:
-                link = ping_destination(body)
-                hold = None if link else held_refresh(body)
-                if hold is not None and hold[0] <= HELD_WAIT_MAX_S:
-                    held.append((time.monotonic() + hold[0], result, hold[1], 1))
-                    continue
-            self._count(result, link)
-        self._follow_held(held, get)
+            if answer is None or _refused(answer[1]):
+                return None
+            link, hold = _read(answer)
+            if link or hold:
+                break
+            if i == 0 and len(paths) > 1 and 200 <= answer[0] < 300 and not answer[2].strip():
+                empty = True
+        return link, hold, empty
 
     def _follow_held(
         self,
