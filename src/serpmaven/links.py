@@ -299,9 +299,10 @@ class LinkResolver:
                 continue
             goto = "/goto?" + redirect.split("/goto?", 1)[1]
             ping = pings.get(goto)
-            if ping is None:
-                continue
-            asked = self._ask([goto] if pings_empty else [ping, goto], get, deadline)
+            if ping is None and not pings_empty:
+                continue  # left to `fill`; once pings are empty, /goto is asked directly
+            paths = [goto] if pings_empty or ping is None else [ping, goto]
+            asked = self._ask(paths, get, deadline)
             if asked is None:
                 return  # refused, or an error: nothing more from this exit
             link, hold, ping_was_empty = asked

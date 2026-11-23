@@ -409,7 +409,7 @@ def test_the_first_ping_never_gets_more_than_the_budget(monkeypatch):
 PING_A, PING_B = "/url?sa=t&source=web&url=AAA&ved=1", "/url?sa=t&source=web&url=BBB&ved=2"
 
 
-def held_page_resolver(monkeypatch, answers):
+def held_page_resolver(monkeypatch, answers, tokens=("AAA", "BBB")):
     """A resolver over PAGE whose requests are answered from `answers` (a path to
     a list of answers, taken in turn); the waits are recorded, not slept."""
     asked, slept = [], []
@@ -420,8 +420,7 @@ def held_page_resolver(monkeypatch, answers):
         return answers[path].pop(0)
 
     results = [
-        {"link": None, "redirect_link": f"https://www.google.com/goto?url={t}"}
-        for t in ("AAA", "BBB")
+        {"link": None, "redirect_link": f"https://www.google.com/goto?url={t}"} for t in tokens
     ]
     resolver = LinkResolver(None, relay_factory=None)
     resolver.fill_from_pings(results, PAGE, get)
@@ -595,12 +594,16 @@ def test_an_empty_ping_is_followed_by_the_goto_on_the_same_exit(monkeypatch):
             PING_A: [(204, "", "")],
             "/goto?url=AAA": [(302, "https://aaa.example/page", "")],
             "/goto?url=BBB": [(200, "", interstitial("BBB", 3)), (302, "https://bbb.example/", "")],
+            "/goto?url=CCC": [(302, "https://ccc.example/", "")],
         },
+        tokens=("AAA", "BBB", "CCC"),
     )
-    assert [r["link"] for r in results] == ["https://aaa.example/page", "https://bbb.example/"]
-    # After one empty ping the page's other links skip the ping and ask /goto.
-    assert asked == [PING_A, "/goto?url=AAA", "/goto?url=BBB", "/goto?url=BBB"]
-    assert len(slept) == 1 and resolver.resolved == 2 and resolver.enabled
+    links_ = [r["link"] for r in results]
+    assert links_ == ["https://aaa.example/page", "https://bbb.example/", "https://ccc.example/"]
+    # After one empty ping the page's other links skip the ping and ask /goto,
+    # including CCC, whose anchor carries no ping at all.
+    assert asked == [PING_A, "/goto?url=AAA", "/goto?url=BBB", "/goto?url=CCC", "/goto?url=BBB"]
+    assert len(slept) == 1 and resolver.resolved == 3 and resolver.enabled
 
 
 def test_a_ping_naming_no_destination_still_asks_the_goto_but_keeps_pinging(monkeypatch):
