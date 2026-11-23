@@ -155,7 +155,7 @@ def open_writer(fmt: str, stream: IO[str]):
 
 
 #: The search_parameters that make two records answers to different searches.
-SAME_SEARCH = ("hl", "gl", "location", "tbs", "pws", "nfpr", "cr", "lr")
+SAME_SEARCH = ("hl", "gl", "location", "tbs", "pws", "nfpr", "cr", "lr", "udm")
 
 
 def answered(path: Path, pages: int = 1, params: dict[str, Any] | None = None) -> set[str]:

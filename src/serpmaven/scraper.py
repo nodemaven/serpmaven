@@ -243,6 +243,10 @@ class Settings:
     #: languages (`lr`, e.g. "lang_en").
     cr: str | None = None
     lr: str | None = None
+    #: True asks Google's Web results only (`udm=14`) on every results page:
+    #: ten links, no AI Overview, "People also ask", related searches or ads,
+    #: and a lighter page.
+    lean: bool = False
     #: Directory to keep every page's HTML in, gzipped, for debugging a parse.
     #: The pages carry the exit's location, so keep them out of anything public.
     save_html: str | None = None
@@ -358,7 +362,7 @@ class Settings:
 
 def filter_params(s: Settings) -> dict[str, str]:
     """What a record's `search_parameters` carry for these settings' location and
-    filters (`location`, `tbs`, `pws`, `nfpr`, `cr`, `lr`), as written there."""
+    filters (`location`, `tbs`, `pws`, `nfpr`, `cr`, `lr`, `udm`), as written there."""
     shown = {
         k: v
         for k, v in browser.url_params(
@@ -368,6 +372,7 @@ def filter_params(s: Settings) -> dict[str, str]:
             autocorrect=s.autocorrect,
             cr=s.cr,
             lr=s.lr,
+            lean=s.lean,
         ).items()
         if k != "uule"
     }
@@ -1161,6 +1166,7 @@ class Scraper:
             autocorrect=s.autocorrect,
             cr=s.cr,
             lr=s.lr,
+            lean=s.lean,
         )
 
     def _record_params(self) -> dict[str, str]:

@@ -468,6 +468,7 @@ The defaults come from measurements in
 | `--no-personalization` | | Results without personalization (`pws=0`) |
 | `--no-autocorrect` | | Search a misspelt query as typed (`nfpr=1`) |
 | `--cr COUNTRIES`, `--lr LANGUAGES` | unset | Only documents from these countries (`countryUS`) or in these languages (`lang_en`) |
+| `--lean` | | Google's Web results only (`udm=14`): ten links a page, no AI Overview, "People also ask", related searches or ads; pages about a third the size |
 | `--clone N` | 10 | With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
 | `--clone-max-age` | 180 | Minutes copied cookies stay in use |
 | `--clone-refusals N` | 1 | Copies refused in a row on their first query that end the copying |

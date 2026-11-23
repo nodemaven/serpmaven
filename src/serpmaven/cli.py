@@ -370,6 +370,12 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         "--lr", metavar="LANGUAGES", help="only documents in these languages, e.g. lang_en"
     )
     p.add_argument(
+        "--lean",
+        action="store_true",
+        help="Google's Web results only (udm=14): ten links a page, no AI Overview, "
+        "People also ask, related searches or ads; lighter pages",
+    )
+    p.add_argument(
         "--save-html",
         type=Path,
         metavar="DIR",
@@ -487,6 +493,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         autocorrect=not args.no_autocorrect,
         cr=args.cr,
         lr=args.lr,
+        lean=args.lean,
         donors=tuple(browser.load_cookies(f) for f in args.cookies or ()),
         renew_donors_every=args.renew_cookies,
         donors_out=args.cookies_out,

@@ -80,6 +80,7 @@ SAMPLES = {
     "--no-autocorrect": Sample(field="autocorrect"),
     "--cr": Sample("countryUS", "cr"),
     "--lr": Sample("lang_en", "lr"),
+    "--lean": Sample(field="lean"),
     "--save-html": Sample("pages", "save_html"),
     "--no-resolve-links": Sample(field="resolve_links"),
     "--links": Sample("3", "links"),
