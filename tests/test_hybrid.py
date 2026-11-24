@@ -522,3 +522,58 @@ def test_a_link_request_never_waits_longer_than_asked():
     assert asked.options["timeout"] == 3.5
     links.get("/url?sa=t&url=BBB", hybrid.TIMEOUT + 10)
     assert asked.options["timeout"] == hybrid.TIMEOUT
+
+
+class Streamed(Response):
+    """A response read in chunks; records how far it was read and whether it was closed."""
+
+    def __init__(self, html, chunk=64, **kw):
+        super().__init__(html, **kw)
+        self.encoding = "utf-8"
+        self.body = html.encode("utf-8")
+        self.chunk, self.read, self.closed = chunk, 0, False
+
+    def iter_content(self):
+        for i in range(0, len(self.body), self.chunk):
+            self.read = i + self.chunk
+            yield self.body[i : i + self.chunk]
+
+    def close(self):
+        self.closed = True
+
+
+TAIL = "<script>" + "x" * 5000 + "</script>"
+
+
+def test_cut_pages_stop_reading_at_the_footer_and_close_the_stream():
+    page = SERVED.html.replace("</body>", '<div id="sfooter">f</div>' + TAIL + "</body>")
+    streamed = Streamed(page)
+    client = Client([streamed])
+    s, _ = session(client)
+    s._cut_pages = True
+    fetched = s.search("best running shoes", direct=True)
+    assert client.options == {"stream": True}
+    assert streamed.closed and streamed.read < len(streamed.body)
+    assert 'id="sfooter"' in fetched.html and "x" * 5000 not in fetched.html
+    assert s.inner.searched == []  # served over HTTP, parsed from the cut page
+
+
+def test_a_marker_split_across_chunks_still_stops_the_read():
+    page = SERVED.html.replace("</body>", '<div id="sfooter">f</div>' + TAIL + "</body>")
+    at = page.encode().find(b'id="sfooter"')
+    streamed = Streamed(page, chunk=at + 5)  # the marker straddles chunks 1 and 2
+    assert 'id="sfooter"' in hybrid.read_until(streamed, hybrid.FOOTER)
+    assert streamed.read < len(streamed.body) and streamed.closed
+
+
+def test_a_page_without_the_footer_is_read_whole():
+    streamed = Streamed("<html>check</html>", chunk=4)
+    assert hybrid.read_until(streamed, hybrid.FOOTER) == "<html>check</html>"
+    assert streamed.closed
+
+
+def test_without_cut_pages_the_response_is_read_as_before():
+    client = Client([Response(SERVED.html)])
+    s, _ = session(client)
+    s.search("best running shoes", direct=True)
+    assert client.options == {}

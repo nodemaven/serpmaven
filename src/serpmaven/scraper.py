@@ -297,6 +297,9 @@ class Settings:
     #: and use the browser only for Google's checks (see `hybrid`). Needs the
     #: relay; an engine that cannot do it ignores it.
     hybrid: bool = True
+    #: Stop reading a results page that comes over HTTP at Google's footer and
+    #: close the stream: what follows is scripts the parser does not read.
+    cut_http_pages: bool = False
     #: Sets of Google cookies from browsers Google already serves, as
     #: Playwright cookie records. Every new exit starts with the current set
     #: instead of walking the warm-up: it carries Google's trust to a new IP,
@@ -1766,6 +1769,7 @@ class Scraper:
             self._headers,
             self._emit,
             pages_over_http=self.settings.hybrid,
+            cut_pages=self.settings.cut_http_pages,
         )
 
     def _relay_for(self, upstream: dict[str, str] | None):

@@ -462,6 +462,7 @@ The defaults come from measurements in
 | `--max-per-exit N` | 300 | Queries before a served proxy IP is retired |
 | `--restart-every N` | 50 | Results pages the browser rendered before it restarts on the same profile and proxy IP; `0` never |
 | `--no-hybrid` | | Fetch every results page in the browser instead of over HTTP between Google's checks |
+| `--cut-http-pages` | | Experimental: stop reading a results page that comes over HTTP at Google's footer, so the scripts after it are not downloaded |
 | `--hl`, `--gl` | `en`, unset | Language and country of the results |
 | `--location PLACE` | unset | Search as from this place, by its canonical name: `"Austin,Texas,United States"` |
 | `--tbs FILTER` | unset | Google's `tbs` filter as it is, e.g. `qdr:w` for the past week |

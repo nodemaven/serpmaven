@@ -316,6 +316,12 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         "with the browser's cookies, and the browser handles only Google's checks",
     )
     p.add_argument(
+        "--cut-http-pages",
+        action="store_true",
+        help="experimental: stop reading a results page that comes over HTTP at Google's "
+        "footer; the scripts after it are not downloaded",
+    )
+    p.add_argument(
         "--cookies",
         metavar="FILE",
         action="append",
@@ -476,6 +482,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         browser_args=browser_args,
         use_relay=not args.no_relay,
         hybrid=not args.no_hybrid,
+        cut_http_pages=args.cut_http_pages,
         save_html=_html_dir(args.save_html, worker),
         resolve_links=not args.no_resolve_links,
         links=args.links,
