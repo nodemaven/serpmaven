@@ -269,22 +269,25 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--input",
         choices=browser.INPUT_MODES,
-        default="type",
-        help="how a query is entered into Google's search box: typed key by key "
+        default=None,
+        help="deprecated, to be removed in the next release: "
+        "how a query is entered into Google's search box: typed key by key "
         "(default), inserted at once, or inserted word by word",
     )
     p.add_argument(
         "--direct",
         choices=DIRECT_MODES,
-        default="all",
-        help="which queries open the results page directly instead of going through "
+        default=None,
+        help="deprecated, to be removed in the next release: "
+        "which queries open the results page directly instead of going through "
         "the search box: all (default), all but the first on each proxy IP, or none; "
         "a language other than en, a country, a location or a filter always opens it directly",
     )
     p.add_argument(
         "--stop-after-read",
         action="store_true",
-        help="leave each results page for about:blank once it is read (experimental: "
+        help="deprecated, to be removed in the next release: "
+        "leave each results page for about:blank once it is read (experimental: "
         "saves traffic Google's late scripts would spend)",
     )
     p.add_argument(
@@ -394,14 +397,31 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="log identities to stderr")
 
 
-#: Defaults of the profile-copy flags, which are on their way out (see `_warn_deprecated`).
+#: Defaults of the flags on their way out (see `_warn_deprecated`).
 CLONE_DEFAULT, CLONE_MAX_AGE_DEFAULT, CLONE_REFUSALS_DEFAULT = 10, 180.0, 1
-#: Flags that still work and warn, with the attribute argparse gives each.
+INPUT_DEFAULT, DIRECT_DEFAULT = "type", "all"
+#: Flags that still work and warn: the flag, the attribute argparse gives it, and what
+#: comes instead.
 DEPRECATED_FLAGS = (
-    ("--clone", "clone"),
-    ("--clone-max-age", "clone_max_age"),
-    ("--clone-refusals", "clone_refusals"),
-    ("--no-clone-cache", "no_clone_cache"),
+    ("--clone", "clone", "cookie sets (--renew-cookies, on by default) replace profile copies"),
+    (
+        "--clone-max-age",
+        "clone_max_age",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    (
+        "--clone-refusals",
+        "clone_refusals",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    (
+        "--no-clone-cache",
+        "no_clone_cache",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    ("--input", "input", "results pages will always be opened directly"),
+    ("--direct", "direct", "results pages will always be opened directly"),
+    ("--stop-after-read", "stop_after_read", None),
 )
 
 
@@ -410,17 +430,24 @@ def _or(value: Any, default: Any) -> Any:
 
 
 def _warn_deprecated(args) -> None:
-    """One line on stderr naming the profile-copy flags this run was given."""
-    used = [
-        flag for flag, name in DEPRECATED_FLAGS if getattr(args, name, None) not in (None, False)
+    """One line on stderr naming the deprecated flags this run was given and what
+    replaces them."""
+    given = [
+        (flag, instead)
+        for flag, name, instead in DEPRECATED_FLAGS
+        if getattr(args, name, None) not in (None, False)
     ]
-    if used:
-        print(
-            f"warning: {', '.join(used)} {'is' if len(used) == 1 else 'are'} deprecated and will "
-            "be removed in the next release; cookie sets (--renew-cookies, on by default) "
-            "replace profile copies",
-            file=sys.stderr,
-        )
+    if not given:
+        return
+    flags = [flag for flag, _ in given]
+    instead = list(dict.fromkeys(i for _, i in given if i))
+    line = (
+        f"warning: {', '.join(flags)} {'is' if len(flags) == 1 else 'are'} deprecated and will "
+        "be removed in the next release"
+    )
+    if instead:
+        line += "; " + "; ".join(instead)
+    print(line, file=sys.stderr)
 
 
 @contextmanager
@@ -500,8 +527,8 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         clones=0 if args.cookies or args.renew_cookies else _or(args.clone, CLONE_DEFAULT),
         clone_max_age=_or(args.clone_max_age, CLONE_MAX_AGE_DEFAULT) * 60,
         clone_refusals=_or(args.clone_refusals, CLONE_REFUSALS_DEFAULT),
-        input=args.input,
-        direct=args.direct,
+        input=_or(args.input, INPUT_DEFAULT),
+        direct=_or(args.direct, DIRECT_DEFAULT),
         stop_after_read=args.stop_after_read,
         gap_seconds=args.gap,
         headless=args.headless,

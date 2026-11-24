@@ -477,8 +477,8 @@ The defaults come from measurements in
 | `--cookies-out DIR` | | Write each renewed cookie set to DIR, for the next run's `--cookies` |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |
 | `--spare N` | 0 | Proxy IPs warmed in the background so a retired one is replaced at once; each costs a warm-up |
-| `--direct` | `all` | Open results pages directly: `all`, `follow-ups` (all but the first query on each proxy IP), `none` |
-| `--input` | `type` | How a query goes into the search box: `type`, `insert`, `words` |
+| `--direct` | `all` | Deprecated, removed in the next release. Open results pages directly: `all`, `follow-ups` (all but the first query on each proxy IP), `none` |
+| `--input` | `type` | Deprecated, removed in the next release. How a query goes into the search box: `type`, `insert`, `words` |
 | `--gap LOW,HIGH` | 2,5 | Seconds between queries on one proxy IP |
 | `--pages N` | 1 | Result pages per query |
 | `--format` | from `-o`, else `jsonl` | `jsonl`, `json` or `csv`; `-o results.csv` picks `csv` by itself |
@@ -492,7 +492,7 @@ The defaults come from measurements in
 | `--browser-arg=ARG` | | Extra Chromium switch, e.g. `--browser-arg=--disable-gpu`; repeat for more, or set `SERPMAVEN_BROWSER_ARGS` |
 | `--headless` | | Run the browser without a window; `serpmaven doctor --headless` shows what a website sees then |
 | `--no-relay` | | Hand the proxy to the browser directly: traffic is not counted, and every results page is fetched in the browser |
-| `--stop-after-read` | | Experimental: leave each query's last results page once it is read |
+| `--stop-after-read` | | Deprecated, removed in the next release. Experimental: leave each query's last results page once it is read |
 | `-v`, `--verbose` | | Print every step as a JSON line on stderr instead of the progress line, after one plain `proxy: ...` line; the run ends with `summary: {...}` |
 
 </details>

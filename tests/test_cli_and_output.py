@@ -366,3 +366,20 @@ def test_the_proxy_source_warns_about_profile_copy_flags(capsys):
     with cli._proxy_source(args):
         pass
     assert "--clone-refusals is deprecated" in capsys.readouterr().err
+
+
+def test_entry_flags_warn_and_still_apply(capsys):
+    parse = cli._parser().parse_args
+    args = parse(["search", "q", "--no-proxy", "--direct", "none", "--input", "insert"])
+    cli._warn_deprecated(args)
+    err = capsys.readouterr().err
+    assert err.startswith("warning: --input, --direct are deprecated")
+    assert "results pages will always be opened directly" in err and err.count("\n") == 1
+    settings = cli._build(args, None)[0].settings
+    assert settings.direct == "none" and settings.input == "insert"
+    settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
+    assert settings.direct == "all" and settings.input == "type"
+    cli._warn_deprecated(parse(["search", "q", "--no-proxy", "--stop-after-read"]))
+    assert capsys.readouterr().err == (
+        "warning: --stop-after-read is deprecated and will be removed in the next release\n"
+    )
