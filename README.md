@@ -468,10 +468,10 @@ The defaults come from measurements in
 | `--no-personalization` | | Results without personalization (`pws=0`) |
 | `--no-autocorrect` | | Search a misspelt query as typed (`nfpr=1`) |
 | `--cr COUNTRIES`, `--lr LANGUAGES` | unset | Only documents from these countries (`countryUS`) or in these languages (`lang_en`) |
-| `--clone N` | 10 | With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
-| `--clone-max-age` | 180 | Minutes copied cookies stay in use |
-| `--clone-refusals N` | 1 | Copies refused in a row on their first query that end the copying |
-| `--no-clone-cache` | | Copies carry cookies only, not the browser cache |
+| `--clone N` | 10 | Deprecated, removed in the next release. With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
+| `--clone-max-age` | 180 | Deprecated, removed in the next release. Minutes copied cookies stay in use |
+| `--clone-refusals N` | 1 | Deprecated, removed in the next release. Copies refused in a row on their first query that end the copying |
+| `--no-clone-cache` | | Deprecated, removed in the next release. Copies carry cookies only, not the browser cache |
 | `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
 | `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
 | `--cookies-out DIR` | | Write each renewed cookie set to DIR, for the next run's `--cookies` |

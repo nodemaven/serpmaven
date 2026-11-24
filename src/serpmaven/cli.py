@@ -221,7 +221,8 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--no-clone-cache",
         action="store_true",
-        help="copies carry the cookie jar only, not the browser cache (by default they "
+        help="deprecated, to be removed in the next release: "
+        "copies carry the cookie jar only, not the browser cache (by default they "
         "carry both, until two copies with the cache are refused)",
     )
     p.add_argument(
@@ -243,24 +244,27 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--clone",
         type=int,
-        default=10,
+        default=None,
         metavar="N",
-        help="with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
+        help="deprecated, to be removed in the next release: "
+        "with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
         "served one's cookies instead of warming each one (default 10; 0 turns it off)",
     )
     p.add_argument(
         "--clone-max-age",
         type=float,
-        default=180.0,
+        default=None,
         metavar="MIN",
-        help="minutes copied cookies stay in use (default 180)",
+        help="deprecated, to be removed in the next release: "
+        "minutes copied cookies stay in use (default 180)",
     )
     p.add_argument(
         "--clone-refusals",
         type=int,
-        default=1,
+        default=None,
         metavar="N",
-        help="copies refused on their first query, in a row, that end the copying (default 1)",
+        help="deprecated, to be removed in the next release: "
+        "copies refused on their first query, in a row, that end the copying (default 1)",
     )
     p.add_argument(
         "--input",
@@ -390,9 +394,39 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="log identities to stderr")
 
 
+#: Defaults of the profile-copy flags, which are on their way out (see `_warn_deprecated`).
+CLONE_DEFAULT, CLONE_MAX_AGE_DEFAULT, CLONE_REFUSALS_DEFAULT = 10, 180.0, 1
+#: Flags that still work and warn, with the attribute argparse gives each.
+DEPRECATED_FLAGS = (
+    ("--clone", "clone"),
+    ("--clone-max-age", "clone_max_age"),
+    ("--clone-refusals", "clone_refusals"),
+    ("--no-clone-cache", "no_clone_cache"),
+)
+
+
+def _or(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
+
+def _warn_deprecated(args) -> None:
+    """One line on stderr naming the profile-copy flags this run was given."""
+    used = [
+        flag for flag, name in DEPRECATED_FLAGS if getattr(args, name, None) not in (None, False)
+    ]
+    if used:
+        print(
+            f"warning: {', '.join(used)} {'is' if len(used) == 1 else 'are'} deprecated and will "
+            "be removed in the next release; cookie sets (--renew-cookies, on by default) "
+            "replace profile copies",
+            file=sys.stderr,
+        )
+
+
 @contextmanager
 def _proxy_source(args) -> Iterator[Any]:
     """One proxy source per run, shared by every worker; a demo sub-user is deleted on exit."""
+    _warn_deprecated(args)
     kind, url = _checked_source(args)
     if kind == "nodemaven":
         proxy = NodeMavenSource(country=args.country)
@@ -463,9 +497,9 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         clone_cache=not args.no_clone_cache,
         spare=args.spare,
         # Cookie sets replace the copies of a served profile.
-        clones=0 if args.cookies or args.renew_cookies else args.clone,
-        clone_max_age=args.clone_max_age * 60,
-        clone_refusals=args.clone_refusals,
+        clones=0 if args.cookies or args.renew_cookies else _or(args.clone, CLONE_DEFAULT),
+        clone_max_age=_or(args.clone_max_age, CLONE_MAX_AGE_DEFAULT) * 60,
+        clone_refusals=_or(args.clone_refusals, CLONE_REFUSALS_DEFAULT),
         input=args.input,
         direct=args.direct,
         stop_after_read=args.stop_after_read,

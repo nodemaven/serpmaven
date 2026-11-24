@@ -198,9 +198,11 @@ def test_a_bad_output_path_still_deletes_the_demo_sub_user(tmp_path, monkeypatch
 
 
 def test_copies_are_on_by_default_and_can_be_turned_off():
-    parser = cli._parser()
-    assert parser.parse_args(["search", "q", "--no-proxy"]).clone == 10
-    assert parser.parse_args(["search", "q", "--no-proxy", "--clone", "0"]).clone == 0
+    parse = cli._parser().parse_args
+    base = ["search", "q", "--no-proxy", "--renew-cookies", "0"]
+    assert parse(base).clone is None  # not given: the default applies without a warning
+    assert cli._build(parse(base), None)[0].settings.clones == 10
+    assert cli._build(parse(base + ["--clone", "0"]), None)[0].settings.clones == 0
 
 
 def test_cookie_sets_are_renewed_by_default_and_zero_brings_copies_back():
@@ -343,3 +345,24 @@ def test_cookies_is_repeatable_and_leaves_the_queries_alone():
     assert args.cookies == ["a.json", "b.json"]
     with pytest.raises(SystemExit):
         parser.parse_args(["search", "q", "--renew-cookies", "-1"])
+
+
+def test_profile_copy_flags_still_work_and_warn_once_named(capsys):
+    parse = cli._parser().parse_args
+    cli._warn_deprecated(parse(["search", "q", "--no-proxy"]))
+    assert capsys.readouterr().err == ""
+    cli._warn_deprecated(parse(["search", "q", "--no-proxy", "--clone", "5"]))
+    err = capsys.readouterr().err
+    assert err.startswith("warning: --clone is deprecated") and err.count("\n") == 1
+    args = parse(["search", "q", "--no-proxy", "--no-clone-cache", "--clone-max-age", "60"])
+    cli._warn_deprecated(args)
+    err = capsys.readouterr().err
+    assert "--clone-max-age, --no-clone-cache are deprecated" in err
+    assert cli._build(args, None)[0].settings.clone_max_age == 3600
+
+
+def test_the_proxy_source_warns_about_profile_copy_flags(capsys):
+    args = cli._parser().parse_args(["search", "q", "--no-proxy", "--clone-refusals", "2"])
+    with cli._proxy_source(args):
+        pass
+    assert "--clone-refusals is deprecated" in capsys.readouterr().err
