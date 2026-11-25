@@ -2,7 +2,8 @@
 
 A query's records (every page it was asked for) are kept as one JSON file named
 by a hash of the query and of the parameters that make it a different search
-(language, country, location, filters, pages). A file older than the time to
+(language, country, location, filters, pages, links, the proxy's country).
+Files are readable by their owner only. A file older than the time to
 live is not used and is replaced when the query is asked again. Only queries
 answered on every page are kept.
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -42,19 +44,30 @@ class ResultCache:
         if not isinstance(records, list) or not records:
             return None
         for record in records:
-            record.setdefault("search_metadata", {})["cached"] = True
+            if not isinstance(record, dict) or not isinstance(
+                record.setdefault("search_metadata", {}), dict
+            ):
+                return None  # not what this cache writes: ask Google instead
+            record["search_metadata"]["cached"] = True
         return records
 
     def put(self, query: str, records: list[dict[str, Any]]) -> None:
-        """Keep `records` for `query`; a file that cannot be written is skipped."""
+        """Keep `records` for `query`, readable by their owner only (they carry
+        the user's queries); a file that cannot be written is skipped."""
+        tmp = None
         try:
-            self.directory.mkdir(parents=True, exist_ok=True)
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             target = self._file(query)
-            tmp = target.with_suffix(f".{os.getpid()}.tmp")
-            tmp.write_text(
-                json.dumps({"saved_at": self._clock(), "records": records}, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=self.directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"saved_at": self._clock(), "records": records}, fh, ensure_ascii=False)
             os.replace(tmp, target)
+            tmp = None
         except OSError:
             pass
+        finally:
+            if tmp is not None:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass

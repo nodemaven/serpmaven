@@ -75,6 +75,51 @@ def test_a_second_run_answers_from_the_cache_without_the_browser(tmp_path, monke
     assert [r["search_metadata"].get("cached") for r in lines] == [True, True]
 
 
+class _Pages(_Recorder):
+    """Two pages a query; `broken` queries fail on page 2."""
+
+    def __init__(self, broken=()):
+        super().__init__()
+        self.broken = set(broken)
+
+    def run(self, queries):
+        for q in queries:
+            self.asked.append(q)
+            first = _record(q, page=1)
+            first["pagination"] = {"next": "https://www.google.com/search?q=x&start=10"}
+            yield first
+            yield _record(q, "Error" if q in self.broken else "Success", page=2)
+
+
+def test_only_a_query_answered_on_every_page_is_kept(tmp_path, monkeypatch):
+    recorder = _Pages(broken={"tacos"})
+    monkeypatch.setattr(cli, "_build", lambda args, proxy, **kw: (recorder, ""))
+    argv = ["search", "pizza", "tacos", "--no-proxy", "--pages", "2", "--cache-ttl", "60"]
+    argv += ["--cache-dir", str(tmp_path / "c")]
+    cli.main([*argv, "-o", str(tmp_path / "a.jsonl")])
+    recorder.asked.clear()
+    recorder.broken.clear()
+    cli.main([*argv, "-o", str(tmp_path / "b.jsonl")])
+    assert recorder.asked == ["tacos"]  # pizza came from the cache, tacos had a failed page
+
+
+def test_an_answer_that_does_not_start_at_page_1_is_not_kept(tmp_path):
+    kept = []
+    answers = cli._Answers(type("C", (), {"put": lambda self, q, r: kept.append(q)})())
+    # Two workers on the same query: A's page 1, B's page 1, A's page 2, B's page 2.
+    for page, complete in ((1, False), (1, False), (2, True), (2, True)):
+        answers.add("pizza", _record("pizza", page=page), complete)
+    assert kept == ["pizza"]  # the second "complete" holds page 2 alone
+
+
+def test_a_malformed_cache_file_falls_back_to_a_search(tmp_path):
+    cache = ResultCache(tmp_path, 60, {})
+    cache.put("pizza", [_record("pizza")])
+    for f in tmp_path.iterdir():
+        f.write_text(json.dumps({"saved_at": cache._clock(), "records": ["x"]}), encoding="utf-8")
+    assert cache.get("pizza") is None
+
+
 def test_without_cache_ttl_nothing_is_kept(tmp_path, monkeypatch):
     recorder = _Recorder()
     monkeypatch.setattr(cli, "_build", lambda args, proxy, **kw: (recorder, ""))
@@ -97,4 +142,5 @@ def test_the_estimate_scales_with_pages_and_workers():
     one = cli._estimate(1000, 1, 1, None)
     assert "1000 results pages, roughly 560-1560 MB" in one and "150-240 min" in one
     assert "75-120 min" in cli._estimate(1000, 1, 2, None)
+    assert "$0.00-0.00 at $0/GB" in cli._estimate(10, 1, 1, 0)
     assert cli._estimate(1, 1, 1, None).startswith("estimate: 1 results page,")

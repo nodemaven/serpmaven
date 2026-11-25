@@ -291,7 +291,8 @@ switch with minimal mapping.
 Knowledge panels, shopping, images and other special blocks are not parsed.
 `--format csv` writes the organic results as a table, and `--price-per-gb` adds
 the cost per 1000 pages to the summary. Before a run starts, `search` prints a
-rough estimate of its proxy traffic and time (and cost, with `--price-per-gb`).
+rough estimate of its proxy traffic and time (and cost, with `--price-per-gb`)
+for the queries it still has to ask; `-v` leaves it out.
 
 </details>
 

@@ -583,7 +583,15 @@ def _cache(args) -> ResultCache | None:
     if not args.cache_ttl:
         return None
     settings = _settings(args, pages=args.pages)
-    params = {"hl": settings.hl, "gl": settings.gl, "pages": args.pages, **filter_params(settings)}
+    params = {
+        "hl": settings.hl,
+        "gl": settings.gl,
+        "pages": args.pages,
+        "links": settings.links,
+        "resolve_links": settings.resolve_links,
+        "proxy_country": getattr(args, "country", None),
+        **filter_params(settings),
+    }
     directory = args.cache_dir or config.directory() / "cache"
     return ResultCache(directory, args.cache_ttl * 60, params)
 
@@ -605,7 +613,7 @@ def _estimate(queries: int, pages: int, workers: int, price: float | None) -> st
         f"estimate: {n} results page{'s' if n != 1 else ''}, roughly {low:.0f}-{high:.0f} MB "
         f"of proxy traffic and {max(fast, 1):.0f}-{max(slow, 1):.0f} min"
     )
-    if price:
+    if price is not None:
         line += f", ${low / 1024 * price:.2f}-{high / 1024 * price:.2f} at ${price:g}/GB"
     return line
 
@@ -645,7 +653,12 @@ class _Answers:
         self.records.setdefault(q, []).append(record)
         if complete:
             got = self.records.pop(q)
-            if all(r["search_metadata"]["status"] == "Success" for r in got):
+            # Pages 1..n in order: the same query asked twice at once on two
+            # workers can leave a list that starts at a later page.
+            pages = [r["search_parameters"].get("page", 1) for r in got]
+            if pages == list(range(1, len(got) + 1)) and all(
+                r["search_metadata"]["status"] == "Success" for r in got
+            ):
                 self.cache.put(q, got)
 
 
