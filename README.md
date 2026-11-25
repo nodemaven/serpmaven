@@ -286,10 +286,12 @@ switch with minimal mapping.
 - `search_metadata.fetched_with`: `http` or `browser`
 - `search_metadata.timings`: seconds per step (`http` for a page fetched over HTTP; `type`, `load`, `ready` and `read` for one the browser rendered; `parse`; `links`, which overlaps the next query)
 - A query that failed is a record too, with an `error`
+- `search_metadata.cached`: `true` on a record answered from `--cache-ttl`
 
 Knowledge panels, shopping, images and other special blocks are not parsed.
 `--format csv` writes the organic results as a table, and `--price-per-gb` adds
-the cost per 1000 pages to the summary.
+the cost per 1000 pages to the summary. Before a run starts, `search` prints a
+rough estimate of its proxy traffic and time (and cost, with `--price-per-gb`).
 
 </details>
 
@@ -484,6 +486,8 @@ The defaults come from measurements in
 | `--format` | from `-o`, else `jsonl` | `jsonl`, `json` or `csv`; `-o results.csv` picks `csv` by itself |
 | `--patient MINUTES` | `0` (stop) | When Google refuses proxy IPs until the run stops, wait and go on with the queries left, up to 3 times; a query cut short is asked again from its first page, so its earlier pages appear twice in the output |
 | `--price-per-gb` | | Your proxy price, to print the cost per 1000 pages |
+| `--cache-ttl MINUTES` | `0` (off) | Answer a query from an earlier run's results if they are at most this old, without the browser or the proxy |
+| `--cache-dir DIR` | | Where `--cache-ttl` keeps results (default: a `cache` folder beside the saved login) |
 | `--no-resolve-links` | | Keep result links as Google `/goto` redirects |
 | `--links N` | all; `mcp` 5 | Resolve the links of the first N organic results on each page only; the rest keep their `/goto` redirect. Fewer answers sooner |
 | `--save-html DIR` | | Keep every page's HTML, gzipped |
