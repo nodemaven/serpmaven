@@ -421,8 +421,10 @@ the cookies of a served proxy IP every N queries, so it stays fresh, and without
 `--cookies` it ends the warm-ups after the first renewal. It is on by default,
 every 5 queries, so a run warms up its first proxy IP and rarely another;
 `--renew-cookies 0` goes back to copies of the first served profile.
-`--cookies-out DIR` saves each renewed set for the next run, readable by its
-owner only. If every set is refused in turn, new proxy IPs are warmed up again,
+Renewed sets are kept in the config folder, readable by their owner only, and
+the next run starts from those up to 24 hours old, so it skips the warm-up too;
+`--cookies-out DIR` keeps them in DIR instead, and `--no-keep-cookies` neither
+reads nor keeps them. If every set is refused in turn, new proxy IPs are warmed up again,
 and with `--renew-cookies` the next renewal brings the sets back. A file is a
 JSON list of Playwright cookie records, or an object with that list under
 `"cookies"`, and must hold Google's `NID` cookie.
@@ -474,7 +476,8 @@ The defaults come from measurements in
 | `--no-clone-cache` | | Copies carry cookies only, not the browser cache |
 | `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
 | `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
-| `--cookies-out DIR` | | Write each renewed cookie set to DIR, for the next run's `--cookies` |
+| `--cookies-out DIR` | | Keep renewed cookie sets in DIR instead of the config folder; the next run starts from them, or pass them to `--cookies` |
+| `--no-keep-cookies` | | Do not start from cookie sets an earlier run kept, and do not keep this run's |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |
 | `--spare N` | 0 | Proxy IPs warmed in the background so a retired one is replaced at once; each costs a warm-up |
 | `--direct` | `all` | Open results pages directly: `all`, `follow-ups` (all but the first query on each proxy IP), `none` |

@@ -343,3 +343,73 @@ def test_cookies_is_repeatable_and_leaves_the_queries_alone():
     assert args.cookies == ["a.json", "b.json"]
     with pytest.raises(SystemExit):
         parser.parse_args(["search", "q", "--renew-cookies", "-1"])
+
+
+def _set(name_value, written):
+    cookie = {"name": "NID", "value": name_value, "domain": ".google.com", "path": "/"}
+    return {"t": written, "cookies": [cookie]}
+
+
+def test_a_run_starts_from_the_sets_an_earlier_run_kept_and_keeps_its_own(tmp_path):
+    import time
+
+    from serpmaven import config
+
+    folder = config.cookies_dir()
+    folder.mkdir(parents=True)
+    now = time.time()
+    (folder / "donor_0.json").write_text(json.dumps(_set("older", now - 3600)))
+    (folder / "donor_1.json").write_text(json.dumps(_set("newer", now - 60)))
+    (folder / "donor_2.json").write_text(json.dumps(_set("stale", now - 25 * 3600)))
+    (folder / "donor_3.json").write_text("not json")
+    (folder / "notes.json").write_text(json.dumps(_set("foreign", now)))
+    parse = cli._parser().parse_args
+    settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
+    assert [s[0]["value"] for s in settings.donors] == ["newer", "older"]
+    assert settings.donors_out == str(folder)
+    assert settings.clones == 0
+
+
+def test_kept_sets_are_left_alone_when_turned_off_or_given_explicitly(tmp_path):
+    import time
+
+    from serpmaven import config
+
+    folder = config.cookies_dir()
+    folder.mkdir(parents=True)
+    (folder / "donor_0.json").write_text(json.dumps(_set("kept", time.time())))
+    given = tmp_path / "given.json"
+    given.write_text(json.dumps(_set("given", time.time())))
+    parse = cli._parser().parse_args
+
+    def settings(argv):
+        return cli._build(parse(["search", "q", "--no-proxy", *argv]), None)[0].settings
+
+    off = settings(["--no-keep-cookies"])
+    assert off.donors == () and off.donors_out is None
+    no_renewal = settings(["--renew-cookies", "0"])
+    assert no_renewal.donors == () and no_renewal.donors_out is None
+    explicit = settings(["--cookies", str(given)])
+    assert [s[0]["value"] for s in explicit.donors] == ["given"]
+    assert explicit.donors_out is None
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "donor_0.json").write_text(json.dumps(_set("from-out", time.time())))
+    chosen = settings(["--cookies-out", str(out)])
+    assert [s[0]["value"] for s in chosen.donors] == ["from-out"]
+    assert chosen.donors_out == str(out)
+
+
+def test_every_worker_of_a_run_starts_from_the_same_kept_sets():
+    import time
+
+    from serpmaven import config
+
+    folder = config.cookies_dir()
+    folder.mkdir(parents=True)
+    path = folder / "donor_0.json"
+    path.write_text(json.dumps(_set("first", time.time())))
+    args = cli._parser().parse_args(["search", "q", "--no-proxy"])
+    first = cli._settings(args, worker=0).donors
+    path.write_text(json.dumps(_set("second", time.time())))
+    assert cli._settings(args, worker=1).donors == first

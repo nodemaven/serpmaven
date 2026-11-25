@@ -66,6 +66,7 @@ SAMPLES = {
     "--cookies": Sample(COOKIES, "donors"),
     "--renew-cookies": Sample("7", "renew_donors_every"),
     "--cookies-out": Sample("sets", "donors_out"),
+    "--no-keep-cookies": Sample(field="donors_out"),
     # Queries and pages.
     "--input": Sample("insert", "input"),
     "--direct": Sample("none", "direct"),

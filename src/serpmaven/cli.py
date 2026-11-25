@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
 import shlex
 import sys
 import time
@@ -32,6 +34,10 @@ from .scraper import (
     filter_params,
 )
 from .server import locale_problem
+
+#: How old a cookie set an earlier run saved may be and still start this run.
+#: A set kept 24 hours on the same machine was served as often as a fresh one.
+KEEP_HOURS = 24
 
 
 def main(argv: list[str] | None = None, prog: str = "serpmaven") -> int:
@@ -336,7 +342,14 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--cookies-out",
         metavar="DIR",
-        help="write each renewed cookie set to DIR, to start the next run with --cookies",
+        help="write each renewed cookie set to DIR, to start the next run with --cookies; "
+        "without --cookies, the next run also starts from the sets in DIR",
+    )
+    p.add_argument(
+        "--no-keep-cookies",
+        action="store_true",
+        help="neither start from the cookie sets an earlier run saved (up to "
+        f"{KEEP_HOURS} hours old) nor save this run's for the next one",
     )
     p.add_argument("--hl", default="en", help="interface language of the results, e.g. de")
     p.add_argument(
@@ -446,6 +459,55 @@ def _source_kind(args) -> tuple[str, str | None]:
     )
 
 
+def _cookie_sets(args) -> tuple[tuple[tuple[dict, ...], ...], str | None]:
+    """The cookie sets new proxy IPs start from, and where renewed ones go.
+
+    `--cookies` files win. Otherwise, while renewal is on, sets saved by an
+    earlier run in the config folder (or `--cookies-out`) are used when at
+    most KEEP_HOURS old, and this run's renewals are saved there in turn."""
+    if args.cookies:
+        return tuple(browser.load_cookies(f) for f in args.cookies), args.cookies_out
+    if not args.renew_cookies or args.no_keep_cookies:
+        return (), args.cookies_out
+    folder = args.cookies_out or str(config.cookies_dir())
+    # Read once: every worker of a pool must start from the same sets.
+    kept = getattr(args, "_kept_sets", None)
+    if kept is None:
+        kept = args._kept_sets = kept_cookie_sets(folder)
+    return kept, folder
+
+
+def kept_cookie_sets(
+    folder: str, max_age: float = KEEP_HOURS * 3600
+) -> tuple[tuple[dict, ...], ...]:
+    """The `donor_<n>.json` sets in `folder` written at most `max_age` seconds
+    ago, newest first; unreadable, foreign or spent files are skipped."""
+    found = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return ()
+    now = time.time()
+    for name in names:
+        if not re.fullmatch(r"donor_\d+\.json", name):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                written = json.load(fh).get("t")
+            if (
+                isinstance(written, bool)
+                or not isinstance(written, (int, float))
+                or not 0 <= now - written <= max_age
+            ):
+                continue
+            found.append((written, browser.load_cookies(path)))
+        except (OSError, ValueError, AttributeError):
+            continue
+    found.sort(key=lambda item: -item[0])
+    return tuple(cookies for _, cookies in found)
+
+
 def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
     """The scraper's settings from the options; raises ValueError on a bad one."""
     problem = locale_problem(args.hl, args.gl)
@@ -454,6 +516,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
     if args.links is not None and args.links < 0:
         raise ValueError("--links must be 0 or more")
     browser_args = tuple(args.browser_args) + tuple(shlex.split(env.get("BROWSER_ARGS", "")))
+    donors, donors_out = _cookie_sets(args)
     return Settings(
         engine=args.engine,
         warmup=args.warmup,
@@ -487,9 +550,9 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         autocorrect=not args.no_autocorrect,
         cr=args.cr,
         lr=args.lr,
-        donors=tuple(browser.load_cookies(f) for f in args.cookies or ()),
+        donors=donors,
         renew_donors_every=args.renew_cookies,
-        donors_out=args.cookies_out,
+        donors_out=donors_out,
     )
 
 

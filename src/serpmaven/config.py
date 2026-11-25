@@ -36,6 +36,11 @@ def path() -> Path:
     return directory() / FILE
 
 
+def cookies_dir() -> Path:
+    """Where runs keep their renewed cookie sets for the next run."""
+    return directory() / "cookies"
+
+
 def load() -> dict[str, Any]:
     """The saved login, or an empty dict when there is none or it is unreadable."""
     try:
