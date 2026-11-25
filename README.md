@@ -480,7 +480,7 @@ The defaults come from measurements in
 | `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
 | `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
 | `--cookies-out DIR` | | Keep renewed cookie sets in DIR instead of the config folder; the next run starts from them, or pass them to `--cookies` |
-| `--no-keep-cookies` | | Do not start from cookie sets an earlier run kept, and do not keep this run's |
+| `--no-keep-cookies` | | Do not start from cookie sets an earlier run kept, and do not keep this run's in the config folder; a `--cookies-out DIR` given with it is still written |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |
 | `--spare N` | 0 | Proxy IPs warmed in the background so a retired one is replaced at once; each costs a warm-up |
 | `--direct` | `all` | Open results pages directly: `all`, `follow-ups` (all but the first query on each proxy IP), `none` |

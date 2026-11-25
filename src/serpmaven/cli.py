@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -516,21 +517,29 @@ def kept_cookie_sets(
 
 def _renumber(folder: str, paths: list[str]) -> None:
     """Move `paths` to `donor_0.json`, `donor_1.json`, ... in their order,
-    through temporary names so no file is overwritten on the way. A move that
-    fails leaves the sets in memory as they are."""
+    through temporary names so no file is overwritten on the way. When a move
+    fails, the files already moved are put back where they were; the sets in
+    memory are used either way."""
     wanted = [os.path.join(folder, f"donor_{i}.json") for i in range(len(paths))]
     if [os.path.normcase(p) for p in paths] == [os.path.normcase(w) for w in wanted]:
         return
+    parked: list[tuple[str, str]] = []  # (temporary name, original path)
     try:
-        moving = []
         for i, path in enumerate(paths):
             tmp = os.path.join(folder, f".donor_renumber_{i}.tmp")
             os.replace(path, tmp)
-            moving.append((tmp, wanted[i]))
-        for tmp, target in moving:
-            os.replace(tmp, target)
+            parked.append((tmp, path))
     except OSError:
+        for tmp, path in reversed(parked):
+            with contextlib.suppress(OSError):
+                os.replace(tmp, path)
         return
+    for (tmp, path), target in zip(parked, wanted, strict=True):
+        try:
+            os.replace(tmp, target)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.replace(tmp, path)
 
 
 def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:

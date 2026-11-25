@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import time
 
 import pages
@@ -386,6 +387,26 @@ def test_kept_sets_are_renumbered_so_a_renewal_writes_back_to_its_own_file(tmp_p
         for p in tmp_path.glob("donor_*.json")
     }
     assert on_disk == {"donor_0.json": "fresh", "donor_1.json": "old"}
+
+
+def test_a_failed_renumbering_puts_the_files_back(tmp_path, monkeypatch):
+    for i in range(3):
+        (tmp_path / f"donor_{i}.json").write_text(str(i), encoding="utf-8")
+    real = os.replace
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 3:  # the third file cannot be moved
+            raise OSError("busy")
+        return real(src, dst)
+
+    monkeypatch.setattr(cli.os, "replace", flaky)
+    paths = [str(tmp_path / f"donor_{i}.json") for i in (2, 1, 0)]
+    cli._renumber(str(tmp_path), paths)
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == ["donor_0.json", "donor_1.json", "donor_2.json"]
+    assert [(tmp_path / f"donor_{i}.json").read_text() for i in range(3)] == ["0", "1", "2"]
 
 
 def test_kept_sets_are_left_alone_when_turned_off_or_given_explicitly(tmp_path):
