@@ -42,6 +42,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -381,128 +382,189 @@ def _landed(search: Search, done: Future, worker: Worker) -> None:
     worker.after(settle_job)
 
 
-def make_handler(  # noqa: C901
-    worker: Worker, *, api_key: str | None, max_pages: int, archive: Archive | None = None
-):
-    archive = archive or Archive()
-    #: Async searches submitted and not yet run.
-    queued = [0]
-    queued_lock = threading.Lock()
+@dataclass(frozen=True)
+class _Request:
+    """A `/search.json` request, checked."""
 
-    def ran(search: Search):
+    query: str
+    pages: int
+    hl: str | None
+    gl: str | None
+    links: int | None
+    links_wait: float | None
+    asynchronous: bool
+
+
+Reply = tuple[int, Any]
+
+
+class Routes:
+    """What `serve` answers, one method a route; `Handler` only parses the URL
+    and writes the reply."""
+
+    def __init__(
+        self,
+        worker: Worker,
+        *,
+        api_key: str | None,
+        max_pages: int,
+        archive: Archive | None = None,
+    ) -> None:
+        self.worker = worker
+        self.api_key = api_key
+        self.max_pages = max_pages
+        self.archive = archive or Archive()
+        #: Async searches submitted and not yet run.
+        self._queued = 0
+        self._queued_lock = threading.Lock()
+
+    def get(self, path: str, params: dict[str, str]) -> Reply:
+        if path == "/health":
+            return self.health()
+        kept = _ARCHIVED.fullmatch(path)
+        if kept:
+            return self.archived(kept.group(1))
+        if path in ("/search", "/search.json"):
+            return self.search(params)
+        return 404, {"error": "use /search.json?q=..., /searches/<id>.json or /health"}
+
+    def authorized(self, given: str) -> bool:
+        if not self.api_key:
+            return True
+        return hmac.compare_digest(given.encode(), self.api_key.encode())
+
+    def health(self) -> Reply:
+        if not self.worker.ready.is_set():
+            return 503, {"status": "warming"}
+        try:
+            summary = self.worker.call(lambda s: s.stats.summary(), timeout=30)
+        except FutureTimeout:
+            return 503, {"status": "busy"}
+        except Exception as exc:
+            return 503, {"status": "down", "error": str(exc)}
+        return 200, {"status": "ok", "stats": summary}
+
+    def archived(self, ident: str) -> Reply:
+        search = self.archive.get(ident)
+        if search is None:
+            return 404, {"error": f"no search with that id in the last {ARCHIVE_TTL_S} s"}
+        return 200, search.body()
+
+    def search(self, params: dict[str, str]) -> Reply:
+        request = self._read(params)
+        if not isinstance(request, _Request):
+            return request
+        if request.asynchronous and not self._take_async_slot():
+            return 429, {"error": f"{self._queued} async searches are already waiting"}
+        parameters = {
+            "q": request.query,
+            "pages": request.pages,
+            "hl": request.hl,
+            "gl": request.gl,
+            "links": request.links,
+        }
+        search = self.archive.new({k: v for k, v in parameters.items() if v is not None})
+        job = start_job(request.query, request.pages, request.hl, request.gl, request.links)
+        if request.asynchronous:
+            self.worker.submit(job).add_done_callback(self._ran(search))
+            return 200, search.body()
+        return self._answer(search, self.worker.submit(job), request)
+
+    def _read(self, params: dict[str, str]) -> _Request | Reply:
+        """The request, or the 400 that says what is wrong with it."""
+        query = (params.get("q") or "").strip()
+        if not query:
+            return 400, {"error": "q is required"}
+        try:
+            pages = int(params.get("pages", "1"))
+        except ValueError:
+            return 400, {"error": "pages must be an integer"}
+        if not 1 <= pages <= self.max_pages:
+            return 400, {"error": f"pages must be between 1 and {self.max_pages}"}
+        hl, gl = params.get("hl") or None, params.get("gl") or None
+        problem = locale_problem(hl, gl)
+        if problem:
+            return 400, {"error": problem}
+        links = links_wait = None
+        try:
+            if params.get("links", "") != "":
+                links = int(params["links"])
+            if params.get("links_wait", "") != "":
+                links_wait = float(params["links_wait"])
+        except ValueError:
+            return 400, {"error": "links must be an integer, links_wait a number"}
+        if links is not None and links < 0:
+            return 400, {"error": "links must be 0 or more"}
+        if links_wait is not None and not 0 <= links_wait <= REQUEST_TIMEOUT_S:
+            return 400, {"error": f"links_wait must be between 0 and {REQUEST_TIMEOUT_S}"}
+        asynchronous = params.get("async", "").lower() in ("1", "true")
+        return _Request(query, pages, hl, gl, links, links_wait, asynchronous)
+
+    def _take_async_slot(self) -> bool:
+        with self._queued_lock:
+            if self._queued >= ASYNC_QUEUED_MAX:
+                return False
+            self._queued += 1
+            return True
+
+    def _ran(self, search: Search) -> Callable[[Future], None]:
         def done(future: Future) -> None:
-            with queued_lock:
-                queued[0] -= 1
-            _landed(search, future, worker)
+            with self._queued_lock:
+                self._queued -= 1
+            _landed(search, future, self.worker)
 
         return done
+
+    def _answer(self, search: Search, future: Future, request: _Request) -> Reply:
+        """Wait for a synchronous search and its links, as far as asked."""
+        try:
+            # Waits without raising what the job raised: a TimeoutError of
+            # the job's own is not this wait running out.
+            future.exception(timeout=REQUEST_TIMEOUT_S)
+        except FutureTimeout:
+            if future.cancel():  # still queued: it never runs
+                search.fail("cancelled: no answer in time")
+            else:  # running: its answer still reaches /searches/<id>.json
+                future.add_done_callback(lambda done: _landed(search, done, self.worker))
+            return 500, {"error": f"TimeoutError: no answer within {REQUEST_TIMEOUT_S} s"}
+        try:
+            pending = future.result()
+        except ExitsRefused as exc:
+            search.fail(str(exc))
+            return 503, {"error": str(exc)}
+        except Exception as exc:
+            search.fail(f"{type(exc).__name__}: {exc}")
+            return 500, {"error": f"{type(exc).__name__}: {exc}"}
+        # Queued before the links are waited for and the answer is written:
+        # the worker does the upkeep, or the next query, while this thread
+        # waits and sends.
+        self.worker.after(settle_job)
+        search.land(pending)
+        pending.wait(REQUEST_TIMEOUT_S if request.links_wait is None else request.links_wait)
+        records = pending.snapshot()
+        return 200, records[0] if request.pages == 1 and len(records) == 1 else records
+
+
+def make_handler(
+    worker: Worker, *, api_key: str | None, max_pages: int, archive: Archive | None = None
+):
+    routes = Routes(worker, api_key=api_key, max_pages=max_pages, archive=archive)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "serpmaven"
 
-        def do_GET(self):  # noqa: C901, N802 - the stdlib's name
+        def do_GET(self):  # noqa: N802 - the stdlib's name
             parts = urlsplit(self.path)
             params = {k: v[0] for k, v in parse_qs(parts.query).items()}
-            if api_key and not self._authorized(params):
+            if not routes.authorized(self._given_key(params)):
                 return self._send(401, {"error": "missing or wrong api_key"})
-            if parts.path == "/health":
-                if not worker.ready.is_set():
-                    return self._send(503, {"status": "warming"})
-                try:
-                    summary = worker.call(lambda s: s.stats.summary(), timeout=30)
-                except FutureTimeout:
-                    return self._send(503, {"status": "busy"})
-                except Exception as exc:
-                    return self._send(503, {"status": "down", "error": str(exc)})
-                return self._send(200, {"status": "ok", "stats": summary})
-            kept = _ARCHIVED.fullmatch(parts.path)
-            if kept:
-                search = archive.get(kept.group(1))
-                if search is None:
-                    return self._send(
-                        404, {"error": f"no search with that id in the last {ARCHIVE_TTL_S} s"}
-                    )
-                return self._send(200, search.body())
-            if parts.path not in ("/search", "/search.json"):
-                return self._send(
-                    404, {"error": "use /search.json?q=..., /searches/<id>.json or /health"}
-                )
-            query = (params.get("q") or "").strip()
-            if not query:
-                return self._send(400, {"error": "q is required"})
-            try:
-                pages = int(params.get("pages", "1"))
-            except ValueError:
-                return self._send(400, {"error": "pages must be an integer"})
-            if not 1 <= pages <= max_pages:
-                return self._send(400, {"error": f"pages must be between 1 and {max_pages}"})
-            hl, gl = params.get("hl") or None, params.get("gl") or None
-            problem = locale_problem(hl, gl)
-            if problem:
-                return self._send(400, {"error": problem})
-            links = links_wait = None
-            try:
-                if params.get("links", "") != "":
-                    links = int(params["links"])
-                if params.get("links_wait", "") != "":
-                    links_wait = float(params["links_wait"])
-            except ValueError:
-                return self._send(400, {"error": "links must be an integer, links_wait a number"})
-            if links is not None and links < 0:
-                return self._send(400, {"error": "links must be 0 or more"})
-            if links_wait is not None and not 0 <= links_wait <= REQUEST_TIMEOUT_S:
-                return self._send(
-                    400, {"error": f"links_wait must be between 0 and {REQUEST_TIMEOUT_S}"}
-                )
-            asynchronous = params.get("async", "").lower() in ("1", "true")
-            if asynchronous:
-                with queued_lock:
-                    if queued[0] >= ASYNC_QUEUED_MAX:
-                        return self._send(
-                            429, {"error": f"{queued[0]} async searches are already waiting"}
-                        )
-                    queued[0] += 1
-            parameters = {"q": query, "pages": pages, "hl": hl, "gl": gl, "links": links}
-            search = archive.new({k: v for k, v in parameters.items() if v is not None})
-            job = start_job(query, pages, hl, gl, links)
-            if asynchronous:
-                worker.submit(job).add_done_callback(ran(search))
-                return self._send(200, search.body())
-            future = worker.submit(job)
-            try:
-                # Waits without raising what the job raised: a TimeoutError of
-                # the job's own is not this wait running out.
-                future.exception(timeout=REQUEST_TIMEOUT_S)
-            except FutureTimeout:
-                if future.cancel():  # still queued: it never runs
-                    search.fail("cancelled: no answer in time")
-                else:  # running: its answer still reaches /searches/<id>.json
-                    future.add_done_callback(lambda done: _landed(search, done, worker))
-                message = f"TimeoutError: no answer within {REQUEST_TIMEOUT_S} s"
-                return self._send(500, {"error": message})
-            try:
-                pending = future.result()
-            except ExitsRefused as exc:
-                search.fail(str(exc))
-                return self._send(503, {"error": str(exc)})
-            except Exception as exc:
-                search.fail(f"{type(exc).__name__}: {exc}")
-                return self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
-            # Queued before the links are waited for and the answer is
-            # written: the worker does the upkeep, or the next query, while
-            # this thread waits and sends.
-            worker.after(settle_job)
-            search.land(pending)
-            pending.wait(REQUEST_TIMEOUT_S if links_wait is None else links_wait)
-            records = pending.snapshot()
-            self._send(200, records[0] if pages == 1 and len(records) == 1 else records)
+            self._send(*routes.get(parts.path, params))
 
-        def _authorized(self, params: dict[str, str]) -> bool:
-            given = params.get("api_key") or ""
+        def _given_key(self, params: dict[str, str]) -> str:
             header = self.headers.get("Authorization", "")
             if header.startswith("Bearer "):
-                given = header[7:]
-            return hmac.compare_digest(given.encode(), api_key.encode())
+                return header[7:]
+            return params.get("api_key") or ""
 
         def _send(self, status: int, body: Any) -> None:
             data = json.dumps(body, ensure_ascii=False).encode()
