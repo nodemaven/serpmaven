@@ -406,8 +406,9 @@ file can come from another machine. `--renew-cookies N` replaces that set with
 the cookies of a served proxy IP every N queries, so it stays fresh, and without
 `--cookies` the first renewal that yields Google's cookies ends the warm-ups. It is
 on by default, every 5 queries, so a run warms up its first proxy IP and rarely
-another. `--renew-cookies 0` turns renewal off: sets given with `--cookies` are
-still used until they are refused, and without them every new proxy IP warms up.
+another. `--renew-cookies 0` turns renewal off: a set given with `--cookies` stays
+in use until two proxy IPs in a row are refused on their first query with it,
+and without sets every new proxy IP warms up.
 `--cookies-out DIR` saves each renewed set for the next run, readable by its
 owner only. If every set is refused in turn, new proxy IPs are warmed up again,
 and with `--renew-cookies` the next renewal brings the sets back. A file is a
