@@ -375,8 +375,8 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Google's Web results only (udm=14): the organic links without the AI "
-        "Overview, People also ask or related searches; lighter pages. On by default for mcp; "
-        "--no-lean asks the full page",
+        "Overview, People also ask, related searches or map places; lighter pages. "
+        "On by default for mcp; --no-lean asks the full page",
     )
     p.add_argument(
         "--save-html",
