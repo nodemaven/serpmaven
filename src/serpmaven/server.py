@@ -454,8 +454,10 @@ class Routes:
         request = self._read(params)
         if not isinstance(request, _Request):
             return request
-        if request.asynchronous and not self._take_async_slot():
-            return 429, {"error": f"{self._queued} async searches are already waiting"}
+        if request.asynchronous:
+            waiting = self._take_async_slot()
+            if waiting is not None:
+                return 429, {"error": f"{waiting} async searches are already waiting"}
         parameters = {
             "q": request.query,
             "pages": request.pages,
@@ -500,12 +502,13 @@ class Routes:
         asynchronous = params.get("async", "").lower() in ("1", "true")
         return _Request(query, pages, hl, gl, links, links_wait, asynchronous)
 
-    def _take_async_slot(self) -> bool:
+    def _take_async_slot(self) -> int | None:
+        """Take a slot for an async search: None when taken, else how many wait."""
         with self._queued_lock:
             if self._queued >= ASYNC_QUEUED_MAX:
-                return False
+                return self._queued
             self._queued += 1
-            return True
+            return None
 
     def _ran(self, search: Search) -> Callable[[Future], None]:
         def done(future: Future) -> None:
