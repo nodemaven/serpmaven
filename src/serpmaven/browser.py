@@ -158,7 +158,7 @@ def url_params(
     a misspelt query is to be searched as typed, and `cr` / `lr` to keep results
     to documents from some countries ("countryUS") or in some languages
     ("lang_en"); `lean` asks Google's Web results only (`udm=14`), ten links a
-    page with no AI Overview, "People also ask", related searches or ads."""
+    page without the AI Overview, "People also ask" or related searches."""
     out = {}
     if location:
         out["uule"] = uule(location)

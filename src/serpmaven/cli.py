@@ -374,8 +374,8 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         "--lean",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Google's Web results only (udm=14): ten links a page, no AI Overview, "
-        "People also ask, related searches or ads; lighter pages. On by default for mcp; "
+        help="Google's Web results only (udm=14): the organic links without the AI "
+        "Overview, People also ask or related searches; lighter pages. On by default for mcp; "
         "--no-lean asks the full page",
     )
     p.add_argument(

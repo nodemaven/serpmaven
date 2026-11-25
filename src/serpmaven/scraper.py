@@ -243,10 +243,6 @@ class Settings:
     #: languages (`lr`, e.g. "lang_en").
     cr: str | None = None
     lr: str | None = None
-    #: True asks Google's Web results only (`udm=14`) on every results page:
-    #: ten links, no AI Overview, "People also ask", related searches or ads,
-    #: and a lighter page.
-    lean: bool = False
     #: Directory to keep every page's HTML in, gzipped, for debugging a parse.
     #: The pages carry the exit's location, so keep them out of anything public.
     save_html: str | None = None
@@ -318,6 +314,10 @@ class Settings:
     #: Directory each renewed set is written to, as `donor_<n>.json`, for the
     #: next run's `donors`.
     donors_out: str | None = None
+    #: True asks Google's Web results only (`udm=14`) on every results page:
+    #: the organic links without the AI Overview, "People also ask" or related
+    #: searches, on a lighter page.
+    lean: bool = False
 
     def __post_init__(self) -> None:  # noqa: C901
         engines.get(self.engine)
