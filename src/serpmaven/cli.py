@@ -301,10 +301,12 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         type=_non_negative,
         default=RENEW_EVERY,
         metavar="N",
-        help="every N served queries on a proxy IP, its Google cookies replace the set new "
-        "proxy IPs start from, so the set stays fresh; without --cookies the first renewal "
+        help="every N served queries on a proxy IP, try to make its Google cookies the set "
+        "new proxy IPs start from (skipped when they hold no NID), so the set stays fresh; "
+        "without --cookies the first renewal "
         "that yields Google's cookies ends the warm-ups (default "
-        f"{RENEW_EVERY}; 0 turns renewal off, and without --cookies every new proxy IP warms up)",
+        f"{RENEW_EVERY}; 0 turns renewal off, and without --cookies every new proxy IP "
+        "warms up unless --warmup off)",
     )
     p.add_argument(
         "--cookies-out",
