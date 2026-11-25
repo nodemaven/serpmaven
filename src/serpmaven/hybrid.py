@@ -227,7 +227,7 @@ class Headers:
         self.streak = 0
         self.disabled = False
         #: The run has reported the header names of a page that came over HTTP.
-        self.http_names_reported = False
+        self._http_names_reported = False
 
     def claim_capture(self) -> bool:
         """Whether this session should record a NetLog: only one at a time,
@@ -236,6 +236,14 @@ class Headers:
             if self.request is not None or self._capturing:
                 return False
             self._capturing = True
+            return True
+
+    def claim_http_names(self) -> bool:
+        """True for the first page over HTTP in the run: it reports its header names."""
+        with self._lock:
+            if self._http_names_reported:
+                return False
+            self._http_names_reported = True
             return True
 
     def offer(self, requests: list[dict]) -> None:
@@ -441,7 +449,8 @@ class HybridSession:
             except OSError:
                 pass
             self._headers.offer(requests)
-        answered = next((r["response"] for r in requests if r.get("response")), None)
+        # The last answered request: a redirect or retry before it is not the page shown.
+        answered = next((r["response"] for r in reversed(requests) if r.get("response")), None)
         if answered:
             self._emit(response_headers_event("browser", header_names(answered)))
         if self._headers.request is not None and requests:
@@ -549,13 +558,13 @@ class HybridSession:
             self._end_series("error", type(exc).__name__)
             return None
         load = round(time.monotonic() - mark, 2)
-        if not self._headers.http_names_reported:
-            self._headers.http_names_reported = True
+        if self._headers.claim_http_names():
             try:
                 names = header_names(_header_pairs(response.headers))
-            except Exception:
-                names = []
-            self._emit(response_headers_event("http", names))
+            except Exception as exc:
+                self._emit({"event": "hybrid_headers_failed", "error": type(exc).__name__})
+            else:
+                self._emit(response_headers_event("http", names))
         self._cookie = fold_cookies(self._cookie, set_cookie_headers(response), self._deleted)
         html = response.text
         verdict = classify(response.url, html, response.status_code)

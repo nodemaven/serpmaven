@@ -25,9 +25,10 @@ REQUEST = {
 
 
 class Response:
-    def __init__(self, html, status=200, url=SEARCH, set_cookie=()):
+    def __init__(self, html, status=200, url=SEARCH, set_cookie=(), headers=()):
         self.text, self.status_code, self.url = html, status, url
         self.headers = Cookies(set_cookie)
+        self.headers.update(headers)
 
 
 class Cookies(dict):
@@ -425,12 +426,19 @@ def test_response_header_names_are_reported_once_a_side_without_values(monkeypat
             ("Secure-Session-Registration", "(ES256);path=x"),
         ],
     )
-    monkeypatch.setattr(hybrid, "read_netlog", lambda path, **kw: [answered])
+    redirect = dict(REQUEST, response=[(":status", "302"), ("location", "/search?q=x")])
+    monkeypatch.setattr(hybrid, "read_netlog", lambda path, **kw: [redirect, answered])
     events = []
     headers = Headers()
     inner = Inner()
     s = HybridSession(inner, "http://127.0.0.1:1", headers, events.append)
-    s._http = Client([Response(pages.results_page()), Response(pages.results_page())])
+    over_http = {"Content-Type": "text/html; charset=UTF-8", "X-Frame-Options": "SAMEORIGIN"}
+    s._http = Client(
+        [
+            Response(pages.results_page(), headers=over_http),
+            Response(pages.results_page(), headers=over_http),
+        ]
+    )
     s.__enter__()
     s._opened_served = True
     s.search("q", direct=True)  # the browser's, recorded
@@ -443,8 +451,15 @@ def test_response_header_names_are_reported_once_a_side_without_values(monkeypat
     browser = reported[0]
     assert browser["names"] == ["secure-session-registration", "set-cookie"]
     assert browser["session_binding"] is True
-    assert "secret" not in json.dumps(reported)
+    dumped = json.dumps(reported)
+    assert "secret" not in dumped and "ES256" not in dumped and "SAMEORIGIN" not in dumped
+    assert reported[1]["names"] == ["content-type", "x-frame-options"]
     assert reported[1]["session_binding"] is False
+
+
+def test_only_one_worker_reports_the_http_header_names():
+    headers = Headers()
+    assert headers.claim_http_names() and not headers.claim_http_names()
 
 
 def test_a_netlog_without_a_request_is_not_recorded_again(monkeypatch):
