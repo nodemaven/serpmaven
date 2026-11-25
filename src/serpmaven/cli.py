@@ -435,7 +435,8 @@ def _warn_deprecated(args) -> None:
     given = [
         (flag, instead)
         for flag, name, instead in DEPRECATED_FLAGS
-        if getattr(args, name, None) not in (None, False)
+        # Identity, not equality: --clone 0 is given, and 0 == False.
+        if (value := getattr(args, name, None)) is not None and value is not False
     ]
     if not given:
         return

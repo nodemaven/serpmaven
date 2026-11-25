@@ -359,6 +359,10 @@ def test_profile_copy_flags_still_work_and_warn_once_named(capsys):
     err = capsys.readouterr().err
     assert "--clone-max-age, --no-clone-cache are deprecated" in err
     assert cli._build(args, None)[0].settings.clone_max_age == 3600
+    cli._warn_deprecated(
+        parse(["search", "q", "--no-proxy", "--renew-cookies", "0", "--clone", "0"])
+    )
+    assert capsys.readouterr().err.startswith("warning: --clone is deprecated")
 
 
 def test_the_proxy_source_warns_about_profile_copy_flags(capsys):
