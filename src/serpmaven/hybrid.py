@@ -200,7 +200,7 @@ def read_until(response: Any, marker: bytes) -> str:
             chunks.append(chunk)
             if marker in tail + chunk:
                 break
-            tail = chunk[-len(marker) :]
+            tail = (tail + chunk)[-len(marker) :]
     finally:
         response.close()
     return b"".join(chunks).decode(getattr(response, "encoding", None) or "utf-8", "replace")

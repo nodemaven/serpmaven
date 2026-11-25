@@ -527,16 +527,19 @@ def test_a_link_request_never_waits_longer_than_asked():
 class Streamed(Response):
     """A response read in chunks; records how far it was read and whether it was closed."""
 
-    def __init__(self, html, chunk=64, **kw):
+    def __init__(self, html, chunk=64, sizes=(), **kw):
         super().__init__(html, **kw)
         self.encoding = "utf-8"
         self.body = html.encode("utf-8")
-        self.chunk, self.read, self.closed = chunk, 0, False
+        self.chunk, self.sizes, self.read, self.closed = chunk, list(sizes), 0, False
 
     def iter_content(self):
-        for i in range(0, len(self.body), self.chunk):
-            self.read = i + self.chunk
-            yield self.body[i : i + self.chunk]
+        i = 0
+        while i < len(self.body):
+            size = self.sizes.pop(0) if self.sizes else self.chunk
+            self.read = i + size
+            yield self.body[i : i + size]
+            i += size
 
     def close(self):
         self.closed = True
@@ -562,6 +565,14 @@ def test_a_marker_split_across_chunks_still_stops_the_read():
     page = SERVED.html.replace("</body>", '<div id="sfooter">f</div>' + TAIL + "</body>")
     at = page.encode().find(b'id="sfooter"')
     streamed = Streamed(page, chunk=at + 5)  # the marker straddles chunks 1 and 2
+    assert 'id="sfooter"' in hybrid.read_until(streamed, hybrid.FOOTER)
+    assert streamed.read < len(streamed.body) and streamed.closed
+
+
+def test_a_marker_over_three_chunks_with_a_short_middle_one_still_stops_the_read():
+    page = SERVED.html.replace("</body>", '<div id="sfooter">f</div>' + TAIL + "</body>")
+    at = page.encode().find(b'id="sfooter"')
+    streamed = Streamed(page, chunk=4096, sizes=(at + 3, 4))  # marker over chunks 1, 2 and 3
     assert 'id="sfooter"' in hybrid.read_until(streamed, hybrid.FOOTER)
     assert streamed.read < len(streamed.body) and streamed.closed
 
