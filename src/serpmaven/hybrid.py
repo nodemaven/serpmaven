@@ -62,6 +62,35 @@ def _split(line: str) -> tuple[str, str]:
     return name.lower(), value
 
 
+#: Response headers that start a Device Bound Session (Chrome's DBSC). Google
+#: sends them to signed-in sessions; on a signed-out results page they would
+#: mean cookies tied to the machine that got them, which cookie sets rely on
+#: not being.
+SESSION_BINDING_PREFIX = "secure-session-"
+
+
+def header_names(pairs) -> list[str]:
+    """The names of (name, value) `pairs`, lower case, sorted and without
+    HTTP/2 pseudo-headers. Never the values: Set-Cookie carries session cookies."""
+    return sorted({str(name).lower() for name, _ in pairs if not str(name).startswith(":")})
+
+
+def response_headers_event(side: str, names: list[str]) -> dict:
+    """The `search_response_headers` event for a results page's response."""
+    return {
+        "event": "search_response_headers",
+        "side": side,
+        "names": names,
+        "session_binding": any(n.startswith(SESSION_BINDING_PREFIX) for n in names),
+    }
+
+
+def _header_pairs(headers) -> list:
+    if hasattr(headers, "multi_items"):
+        return list(headers.multi_items())
+    return list(headers.items())
+
+
 def read_netlog(path: str, host: str = "www.google.com", prefix: str = "/search") -> list[dict]:
     """Every HTTP/2 request Chromium sent to `host` for a path starting with
     `prefix`, in the order sent: its headers as a list of (name, value) pairs
@@ -197,6 +226,8 @@ class Headers:
         #: Exits in a row that stepped back to the browser.
         self.streak = 0
         self.disabled = False
+        #: The run has reported the header names of a page that came over HTTP.
+        self.http_names_reported = False
 
     def claim_capture(self) -> bool:
         """Whether this session should record a NetLog: only one at a time,
@@ -410,6 +441,9 @@ class HybridSession:
             except OSError:
                 pass
             self._headers.offer(requests)
+        answered = next((r["response"] for r in requests if r.get("response")), None)
+        if answered:
+            self._emit(response_headers_event("browser", header_names(answered)))
         if self._headers.request is not None and requests:
             self._emit({"event": "hybrid_headers", "requests": len(requests)})
         elif self._recorded:
@@ -515,6 +549,13 @@ class HybridSession:
             self._end_series("error", type(exc).__name__)
             return None
         load = round(time.monotonic() - mark, 2)
+        if not self._headers.http_names_reported:
+            self._headers.http_names_reported = True
+            try:
+                names = header_names(_header_pairs(response.headers))
+            except Exception:
+                names = []
+            self._emit(response_headers_event("http", names))
         self._cookie = fold_cookies(self._cookie, set_cookie_headers(response), self._deleted)
         html = response.text
         verdict = classify(response.url, html, response.status_code)
