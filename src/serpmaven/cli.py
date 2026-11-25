@@ -349,7 +349,8 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         "--no-keep-cookies",
         action="store_true",
         help="neither start from the cookie sets an earlier run saved (up to "
-        f"{KEEP_HOURS} hours old) nor save this run's for the next one",
+        f"{KEEP_HOURS} hours old) nor save this run's in the config folder; "
+        "an explicit --cookies-out is still written",
     )
     p.add_argument("--hl", default="en", help="interface language of the results, e.g. de")
     p.add_argument(
@@ -481,7 +482,11 @@ def kept_cookie_sets(
     folder: str, max_age: float = KEEP_HOURS * 3600
 ) -> tuple[tuple[dict, ...], ...]:
     """The `donor_<n>.json` sets in `folder` written at most `max_age` seconds
-    ago, newest first; unreadable, foreign or spent files are skipped."""
+    ago, newest first; unreadable, foreign or spent files are skipped.
+
+    The files are renumbered to match, newest `donor_0.json`: a renewal writes
+    slot n's set to `donor_<n>.json`, which must be the file that set came from,
+    not a fresher one."""
     found = []
     try:
         names = os.listdir(folder)
@@ -501,11 +506,31 @@ def kept_cookie_sets(
                 or not 0 <= now - written <= max_age
             ):
                 continue
-            found.append((written, browser.load_cookies(path)))
+            found.append((written, path, browser.load_cookies(path)))
         except (OSError, ValueError, AttributeError):
             continue
     found.sort(key=lambda item: -item[0])
-    return tuple(cookies for _, cookies in found)
+    _renumber(folder, [path for _, path, _ in found])
+    return tuple(cookies for _, _, cookies in found)
+
+
+def _renumber(folder: str, paths: list[str]) -> None:
+    """Move `paths` to `donor_0.json`, `donor_1.json`, ... in their order,
+    through temporary names so no file is overwritten on the way. A move that
+    fails leaves the sets in memory as they are."""
+    wanted = [os.path.join(folder, f"donor_{i}.json") for i in range(len(paths))]
+    if [os.path.normcase(p) for p in paths] == [os.path.normcase(w) for w in wanted]:
+        return
+    try:
+        moving = []
+        for i, path in enumerate(paths):
+            tmp = os.path.join(folder, f".donor_renumber_{i}.tmp")
+            os.replace(path, tmp)
+            moving.append((tmp, wanted[i]))
+        for tmp, target in moving:
+            os.replace(tmp, target)
+    except OSError:
+        return
 
 
 def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:

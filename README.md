@@ -197,8 +197,9 @@ serpmaven login --proxy "http://USER-session-{session}:PASS@gate.example.com:700
 serpmaven search "best running shoes" -o results.jsonl
 ```
 
-The first query takes a few minutes while the first proxy IP warms up on a few
-ordinary pages; the terminal shows each step. Later queries take seconds, and
+The first query of a first run takes a few minutes while the first proxy IP warms
+up on a few ordinary pages; the terminal shows each step. A run within a day of
+the last one starts from the cookies that run kept and skips it. Later queries take seconds, and
 new proxy IPs start from its cookies. Every run ends with the pages served and
 the traffic used, warm-up apart from the pages.
 
@@ -367,9 +368,10 @@ To build it yourself: `docker build -t serpmaven .`
 ## How it works
 
 1. **New identity:** a sticky proxy session and a fresh browser profile.
-2. **Warm-up:** the first proxy IP opens a few ordinary pages, staying on each
-   for 20-45 seconds. Later ones start from the Google cookies of a served proxy
-   IP and are warmed up only when no such set is accepted.
+2. **Warm-up:** with no cookie set to start from (kept by an earlier run or given
+   with `--cookies`), the first proxy IP opens a few ordinary pages, staying on
+   each for 20-45 seconds. Later ones start from the Google cookies of a served
+   proxy IP and are warmed up only when no such set is accepted.
 3. **Search:** the first query on a proxy IP goes through the browser. Once Google
    serves it, the next pages come over HTTPS with the browser's cookies, until
    Google asks for its check again.
@@ -419,12 +421,13 @@ Google cookies of a browser Google already serves, so it skips the warm-up; the
 file can come from another machine. `--renew-cookies N` replaces that set with
 the cookies of a served proxy IP every N queries, so it stays fresh, and without
 `--cookies` it ends the warm-ups after the first renewal. It is on by default,
-every 5 queries, so a run warms up its first proxy IP and rarely another;
-`--renew-cookies 0` goes back to copies of the first served profile.
-Renewed sets are kept in the config folder, readable by their owner only, and
-the next run starts from those up to 24 hours old, so it skips the warm-up too;
-`--cookies-out DIR` keeps them in DIR instead, and `--no-keep-cookies` neither
-reads nor keeps them. If every set is refused in turn, new proxy IPs are warmed up again,
+every 5 queries, so a run warms up at most its first proxy IP and rarely another;
+`--renew-cookies 0` goes back to copies of the first served profile and keeps
+no sets. Renewed sets are kept in the config folder, readable by their owner
+only, and the next run starts from those up to 24 hours old, so it skips the
+warm-up too; `--cookies-out DIR` keeps them in DIR instead. `--no-keep-cookies`
+neither reads nor keeps them in the config folder; a `--cookies-out DIR` given
+with it is still written, since it was asked for. If every set is refused in turn, new proxy IPs are warmed up again,
 and with `--renew-cookies` the next renewal brings the sets back. A file is a
 JSON list of Playwright cookie records, or an object with that list under
 `"cookies"`, and must hold Google's `NID` cookie.

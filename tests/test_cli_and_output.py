@@ -1,5 +1,6 @@
 import io
 import json
+import time
 
 import pages
 import pytest
@@ -368,6 +369,23 @@ def test_a_run_starts_from_the_sets_an_earlier_run_kept_and_keeps_its_own(tmp_pa
     assert [s[0]["value"] for s in settings.donors] == ["newer", "older"]
     assert settings.donors_out == str(folder)
     assert settings.clones == 0
+
+
+def test_kept_sets_are_renumbered_so_a_renewal_writes_back_to_its_own_file(tmp_path):
+    def keep(name, hours_ago, value):
+        cookies = [{"name": "NID", "value": value, "domain": ".google.com", "path": "/"}]
+        record = {"t": time.time() - hours_ago * 3600, "cookies": cookies}
+        (tmp_path / name).write_text(json.dumps(record), encoding="utf-8")
+
+    keep("donor_0.json", 20, "old")
+    keep("donor_1.json", 1, "fresh")
+    kept = cli.kept_cookie_sets(str(tmp_path))
+    assert [s[0]["value"] for s in kept] == ["fresh", "old"]
+    on_disk = {
+        p.name: json.loads(p.read_text(encoding="utf-8"))["cookies"][0]["value"]
+        for p in tmp_path.glob("donor_*.json")
+    }
+    assert on_disk == {"donor_0.json": "fresh", "donor_1.json": "old"}
 
 
 def test_kept_sets_are_left_alone_when_turned_off_or_given_explicitly(tmp_path):
