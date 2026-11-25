@@ -101,6 +101,9 @@ SAMPLES = {
     "--prewarm": Sample(),
 }
 
+#: On/off options a command has on by default: the sample there turns them off.
+ON_BY_DEFAULT = {("mcp", "--lean"): "--no-lean"}
+
 #: Fields of `Settings` no option above sets, and where they come from.
 NOT_FROM_AN_OPTION = {
     "pages": "search passes --pages itself; serve and mcp take it from each request",
@@ -200,7 +203,8 @@ def test_every_sample_changes_what_the_command_runs_with(tmp_path, monkeypatch):
         sample = SAMPLES[option]
         base = [command, *sample.beside]
         before = parse(base)
-        after = parse([*base, option if sample.value is None else f"{option}={sample.value}"])
+        given = ON_BY_DEFAULT.get((command, option), option)
+        after = parse([*base, given if sample.value is None else f"{given}={sample.value}"])
         if sample.field is None:
             changed = getattr(before, action.dest) != getattr(after, action.dest)
         else:
