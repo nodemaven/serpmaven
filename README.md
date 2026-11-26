@@ -403,7 +403,7 @@ memory or a crashed browser drops it at once.
 **Starting from saved cookies.** `--cookies FILE` gives every new proxy IP the
 Google cookies of a browser Google already serves, so it skips the warm-up; the
 file can come from another machine. `--renew-cookies N` tries every N served
-queries to replace that set with the cookies of a served proxy IP (skipped when they hold
+queries on a proxy IP to replace that set with that proxy IP's cookies (skipped when they hold
 no `NID`), so it stays fresh, and without
 `--cookies` the first renewal that yields Google's cookies ends the warm-ups. It is
 on by default, every 5 queries, so a run warms up its first proxy IP and rarely
