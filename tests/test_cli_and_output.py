@@ -409,6 +409,25 @@ def test_a_failed_renumbering_puts_the_files_back(tmp_path, monkeypatch):
     assert [(tmp_path / f"donor_{i}.json").read_text() for i in range(3)] == ["0", "1", "2"]
 
 
+def test_a_failed_final_rename_puts_every_file_back(tmp_path, monkeypatch):
+    for i in range(3):
+        (tmp_path / f"donor_{i}.json").write_text(str(i), encoding="utf-8")
+    real = os.replace
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 5:  # three parked, the first final move done, the second fails
+            raise OSError("busy")
+        return real(src, dst)
+
+    monkeypatch.setattr(cli.os, "replace", flaky)
+    paths = [str(tmp_path / f"donor_{i}.json") for i in (2, 1, 0)]
+    cli._renumber(str(tmp_path), paths)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [f"donor_{i}.json" for i in range(3)]
+    assert [(tmp_path / f"donor_{i}.json").read_text() for i in range(3)] == ["0", "1", "2"]
+
+
 def test_kept_sets_are_left_alone_when_turned_off_or_given_explicitly(tmp_path):
     import time
 

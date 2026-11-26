@@ -524,20 +524,21 @@ def _renumber(folder: str, paths: list[str]) -> None:
     if [os.path.normcase(p) for p in paths] == [os.path.normcase(w) for w in wanted]:
         return
     parked: list[tuple[str, str]] = []  # (temporary name, original path)
+    placed: list[tuple[str, str]] = []  # (temporary name, final name)
     try:
         for i, path in enumerate(paths):
             tmp = os.path.join(folder, f".donor_renumber_{i}.tmp")
             os.replace(path, tmp)
             parked.append((tmp, path))
-    except OSError:
-        for tmp, path in reversed(parked):
-            with contextlib.suppress(OSError):
-                os.replace(tmp, path)
-        return
-    for (tmp, path), target in zip(parked, wanted, strict=True):
-        try:
+        for (tmp, _), target in zip(parked, wanted, strict=True):
             os.replace(tmp, target)
-        except OSError:
+            placed.append((tmp, target))
+    except OSError:
+        # All or nothing: the files go back to the names they had.
+        for tmp, target in reversed(placed):
+            with contextlib.suppress(OSError):
+                os.replace(target, tmp)
+        for tmp, path in reversed(parked):
             with contextlib.suppress(OSError):
                 os.replace(tmp, path)
 
