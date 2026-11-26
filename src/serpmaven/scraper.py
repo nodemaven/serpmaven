@@ -318,6 +318,9 @@ class Settings:
     #: renewal of slot n writes over `donor_files[n]`, so it replaces its own
     #: set's file and not another one. Slots past it take unused names.
     donor_files: tuple[str, ...] = ()
+    #: The browser build this run uses (see `cli.browser_build`), written with
+    #: each renewed set so a later run with another build leaves it alone.
+    donor_build: str | None = None
 
     def __post_init__(self) -> None:  # noqa: C901
         engines.get(self.engine)
@@ -545,9 +548,11 @@ class Donors:
         out: str | None = None,
         slots: int = DONOR_SLOTS,
         files: tuple[str, ...] = (),
+        build: str | None = None,
     ) -> None:
         self.sets = list(sets)
         self.out = out
+        self.build = build
         self.slots = max(slots, 1)
         #: The file in `out` each slot writes to; see `Settings.donor_files`.
         self._files = list(files)[: len(self.sets)]
@@ -664,7 +669,10 @@ class Donors:
             # whatever sat at the path before, the result is owner-only.
             fd, tmp = tempfile.mkstemp(prefix=f".donor_{at}.", suffix=".tmp", dir=self.out)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"t": time.time(), "cookies": list(cookies)}, fh)
+                record = {"t": time.time(), "cookies": list(cookies)}
+                if self.build is not None:
+                    record["browser"] = self.build
+                json.dump(record, fh)
             os.replace(tmp, path)
             tmp = None
         except OSError as exc:
@@ -1039,7 +1047,10 @@ class Scraper:
         self._owns_templates = True
         self._breaker = Breaker(self.settings.breaker)
         self._donors = Donors(
-            self.settings.donors, self.settings.donors_out, files=self.settings.donor_files
+            self.settings.donors,
+            self.settings.donors_out,
+            files=self.settings.donor_files,
+            build=self.settings.donor_build,
         )
         self._headers = Headers()
         self._saved = 0

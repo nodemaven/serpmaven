@@ -426,7 +426,9 @@ every 5 queries, so a run warms up at most its first proxy IP and rarely another
 `--renew-cookies 0` goes back to copies of the first served profile and keeps
 no sets. Renewed sets are kept in the config folder, readable by their owner
 only, and the next run starts from those up to 24 hours old, so it skips the
-warm-up too; `--cookies-out DIR` keeps them in DIR instead. `--no-keep-cookies`
+warm-up too, if it uses the same browser build (engine, channel and version):
+a set made by another build is refused more often, so after an update a run
+starts fresh. `--cookies-out DIR` keeps them in DIR instead. `--no-keep-cookies`
 neither reads nor keeps them in the config folder; a `--cookies-out DIR` given
 with it is still written, since it was asked for. If every set is refused in turn, new proxy IPs are warmed up again,
 and with `--renew-cookies` the next renewal brings the sets back. A file is a

@@ -105,6 +105,7 @@ SAMPLES = {
 NOT_FROM_AN_OPTION = {
     "pages": "search passes --pages itself; serve and mcp take it from each request",
     "donor_files": "the file names of the kept sets, read with them",
+    "donor_build": "the browser build, from --engine and --channel",
     "max_exits_per_query": "library only",
     "breaker": "library only",
     "dwell_seconds": "library only",

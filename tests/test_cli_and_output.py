@@ -347,8 +347,10 @@ def test_cookies_is_repeatable_and_leaves_the_queries_alone():
 
 
 def _set(name_value, written):
+    """A kept set as this run's browser build would have written it."""
     cookie = {"name": "NID", "value": name_value, "domain": ".google.com", "path": "/"}
-    return {"t": written, "cookies": [cookie]}
+    build = cli.browser_build(cli._parser().parse_args(["search", "q", "--no-proxy"]))
+    return {"t": written, "browser": build, "cookies": [cookie]}
 
 
 def test_a_run_starts_from_the_sets_an_earlier_run_kept_and_keeps_its_own(tmp_path):
@@ -396,6 +398,25 @@ def test_a_renewal_writes_back_to_the_file_its_set_came_from(tmp_path):
         return json.loads((tmp_path / name).read_text(encoding="utf-8"))["cookies"][0]["value"]
 
     assert on_disk("donor_0.json") == "new" and on_disk("donor_1.json") == "fresh"
+
+
+def test_sets_another_browser_build_made_are_not_used(tmp_path):
+    from serpmaven.scraper import Donors
+
+    nid = {"name": "NID", "value": "v", "domain": ".google.com", "path": "/"}
+    Donors((), str(tmp_path), build="patchright/bundled/1.0").renew((nid,), "e", lambda e: None)
+    saved = json.loads((tmp_path / "donor_0.json").read_text(encoding="utf-8"))
+    assert saved["browser"] == "patchright/bundled/1.0"
+    assert len(cli.kept_cookie_sets(str(tmp_path), build="patchright/bundled/1.0")) == 1
+    assert cli.kept_cookie_sets(str(tmp_path), build="patchright/chrome/1.0") == ()
+    assert cli.kept_cookie_sets(str(tmp_path), build="patchright/bundled/2.0") == ()
+
+
+def test_the_browser_build_names_engine_channel_and_package_version():
+    parse = cli._parser().parse_args
+    bundled = cli.browser_build(parse(["search", "q", "--no-proxy"]))
+    chrome = cli.browser_build(parse(["search", "q", "--no-proxy", "--channel", "chrome"]))
+    assert bundled.startswith("patchright/bundled/") and chrome.startswith("patchright/chrome/")
 
 
 def test_kept_sets_are_left_alone_when_turned_off_or_given_explicitly(tmp_path):

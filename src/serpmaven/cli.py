@@ -460,6 +460,26 @@ def _source_kind(args) -> tuple[str, str | None]:
     )
 
 
+#: The package each engine's browser comes with: its version pins the build.
+ENGINE_PACKAGES = {"patchright": "patchright", "cloak": "cloakbrowser"}
+
+
+def browser_build(args) -> str:
+    """Which browser build this run uses, without starting it: the engine, the
+    channel (or the engine's own bundled browser) and its package's version.
+
+    Kept cookie sets are tied to it: a set made by one build is refused more
+    often by another. A `--channel` browser that updates itself keeps its
+    label across its own updates."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        made_by = version(ENGINE_PACKAGES.get(args.engine, args.engine))
+    except PackageNotFoundError:
+        made_by = "unknown"
+    return f"{args.engine}/{args.channel or 'bundled'}/{made_by}"
+
+
 def _cookie_sets(args) -> tuple[tuple[tuple[dict, ...], ...], str | None, tuple[str, ...]]:
     """The cookie sets new proxy IPs start from, where renewed ones go, and the
     file in that folder each set came from (none for `--cookies` files).
@@ -475,16 +495,17 @@ def _cookie_sets(args) -> tuple[tuple[tuple[dict, ...], ...], str | None, tuple[
     # Read once: every worker of a pool must start from the same sets.
     kept = getattr(args, "_kept_sets", None)
     if kept is None:
-        kept = args._kept_sets = kept_cookie_sets(folder)
+        kept = args._kept_sets = kept_cookie_sets(folder, build=browser_build(args))
     return tuple(c for c, _ in kept), folder, tuple(name for _, name in kept)
 
 
 def kept_cookie_sets(
-    folder: str, max_age: float = KEEP_HOURS * 3600
+    folder: str, max_age: float = KEEP_HOURS * 3600, build: str | None = None
 ) -> tuple[tuple[tuple[dict, ...], str], ...]:
     """The `donor_<n>.json` sets in `folder` written at most `max_age` seconds
     ago, newest first, each with its file name; unreadable, foreign or spent
-    files are skipped. Nothing on disk is changed."""
+    files, and with `build` the sets another browser build made, are skipped.
+    Nothing on disk is changed."""
     found = []
     try:
         names = os.listdir(folder)
@@ -497,7 +518,10 @@ def kept_cookie_sets(
         path = os.path.join(folder, name)
         try:
             with open(path, encoding="utf-8") as fh:
-                written = json.load(fh).get("t")
+                saved = json.load(fh)
+            written = saved.get("t")
+            if build is not None and saved.get("browser") != build:
+                continue
             if (
                 isinstance(written, bool)
                 or not isinstance(written, (int, float))
@@ -557,6 +581,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         renew_donors_every=args.renew_cookies,
         donors_out=donors_out,
         donor_files=donor_files,
+        donor_build=browser_build(args),
     )
 
 
