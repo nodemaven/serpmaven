@@ -49,6 +49,9 @@ GOOD_SERIES = 20
 #: browser takes the query, and a served page takes one or two.
 TIMEOUT = 20
 GOOGLE = "https://www.google.com/search"
+#: Where a results page's content ends: past Google's footer the page carries
+#: only scripts, which nothing here reads.
+FOOTER = b'id="sfooter"'
 
 
 # -- request headers ------------------------------------------------------------
@@ -60,6 +63,35 @@ def _split(line: str) -> tuple[str, str]:
         return ":" + name, value
     name, _, value = line.partition(": ")
     return name.lower(), value
+
+
+#: Response headers that start a Device Bound Session (Chrome's DBSC). Google
+#: sends them to signed-in sessions; on a signed-out results page they would
+#: mean cookies tied to the machine that got them, which cookie sets rely on
+#: not being.
+SESSION_BINDING_PREFIX = "secure-session-"
+
+
+def header_names(pairs) -> list[str]:
+    """The names of (name, value) `pairs`, lower case, sorted and without
+    HTTP/2 pseudo-headers. Never the values: Set-Cookie carries session cookies."""
+    return sorted({str(name).lower() for name, _ in pairs if not str(name).startswith(":")})
+
+
+def response_headers_event(side: str, names: list[str]) -> dict:
+    """The `search_response_headers` event for a results page's response."""
+    return {
+        "event": "search_response_headers",
+        "side": side,
+        "names": names,
+        "session_binding": any(n.startswith(SESSION_BINDING_PREFIX) for n in names),
+    }
+
+
+def _header_pairs(headers) -> list:
+    if hasattr(headers, "multi_items"):
+        return list(headers.multi_items())
+    return list(headers.items())
 
 
 def read_netlog(path: str, host: str = "www.google.com", prefix: str = "/search") -> list[dict]:
@@ -186,6 +218,23 @@ def impersonate_for(request: dict | None) -> str:
     return f"chrome{usable[-1] if usable else targets[0]}"
 
 
+def read_until(response: Any, marker: bytes) -> str:
+    """The body of a streamed response up to and including the chunk that holds
+    `marker`; the rest is never read, and the stream is closed. A body without
+    the marker (a check page, an error) is read whole."""
+    chunks: list[bytes] = []
+    tail = b""
+    try:
+        for chunk in response.iter_content():
+            chunks.append(chunk)
+            if marker in tail + chunk:
+                break
+            tail = (tail + chunk)[-len(marker) :]
+    finally:
+        response.close()
+    return b"".join(chunks).decode(getattr(response, "encoding", None) or "utf-8", "replace")
+
+
 class Headers:
     """The run's request template and its state, shared by every exit (and
     every worker in a pool)."""
@@ -197,6 +246,8 @@ class Headers:
         #: Exits in a row that stepped back to the browser.
         self.streak = 0
         self.disabled = False
+        #: The run has reported the header names of a page that came over HTTP.
+        self._http_names_reported = False
 
     def claim_capture(self) -> bool:
         """Whether this session should record a NetLog: only one at a time,
@@ -205,6 +256,14 @@ class Headers:
             if self.request is not None or self._capturing:
                 return False
             self._capturing = True
+            return True
+
+    def claim_http_names(self) -> bool:
+        """True for the first page over HTTP in the run: it reports its header names."""
+        with self._lock:
+            if self._http_names_reported:
+                return False
+            self._http_names_reported = True
             return True
 
     def offer(self, requests: list[dict]) -> None:
@@ -302,10 +361,12 @@ class HybridSession:
         on_event=None,
         *,
         pages_over_http: bool = True,
+        cut_pages: bool = False,
     ) -> None:
         self.inner = inner
         self.name = getattr(inner, "name", "patchright")
         self._pages_over_http = pages_over_http
+        self._cut_pages = cut_pages
         self._proxy_url = proxy_url
         self._headers = headers
         self._emit = on_event or (lambda event: None)
@@ -410,6 +471,10 @@ class HybridSession:
             except OSError:
                 pass
             self._headers.offer(requests)
+        # The last answered request: a redirect or retry before it is not the page shown.
+        answered = next((r["response"] for r in reversed(requests) if r.get("response")), None)
+        if answered:
+            self._emit(response_headers_event("browser", header_names(answered)))
         if self._headers.request is not None and requests:
             self._emit({"event": "hybrid_headers", "requests": len(requests)})
         elif self._recorded:
@@ -508,15 +573,25 @@ class HybridSession:
             self._cookie = self.inner.google_cookies()
         mark = time.monotonic()
         try:
-            response = self._client().get(
-                url, headers=replay_headers(self._headers.request, self._cookie)
-            )
+            headers = replay_headers(self._headers.request, self._cookie)
+            if self._cut_pages:
+                response = self._client().get(url, headers=headers, stream=True)
+                html = read_until(response, FOOTER)
+            else:
+                response = self._client().get(url, headers=headers)
+                html = response.text
         except Exception as exc:
             self._end_series("error", type(exc).__name__)
             return None
         load = round(time.monotonic() - mark, 2)
+        if self._headers.claim_http_names():
+            try:
+                names = header_names(_header_pairs(response.headers))
+            except Exception as exc:
+                self._emit({"event": "hybrid_headers_failed", "error": type(exc).__name__})
+            else:
+                self._emit(response_headers_event("http", names))
         self._cookie = fold_cookies(self._cookie, set_cookie_headers(response), self._deleted)
-        html = response.text
         verdict = classify(response.url, html, response.status_code)
         if not verdict.served:
             self._end_series("check" if verdict.kind == "no_js" else verdict.kind)

@@ -25,9 +25,10 @@ REQUEST = {
 
 
 class Response:
-    def __init__(self, html, status=200, url=SEARCH, set_cookie=()):
+    def __init__(self, html, status=200, url=SEARCH, set_cookie=(), headers=()):
         self.text, self.status_code, self.url = html, status, url
         self.headers = Cookies(set_cookie)
+        self.headers.update(headers)
 
 
 class Cookies(dict):
@@ -416,6 +417,51 @@ def test_the_next_page_of_an_http_page_opens_that_query_when_http_is_off():
     assert s.inner.opened == [("a b", 10)]
 
 
+def test_response_header_names_are_reported_once_a_side_without_values(monkeypatch):
+    answered = dict(
+        REQUEST,
+        response=[
+            (":status", "200"),
+            ("set-cookie", "NID=secret"),
+            ("Secure-Session-Registration", "(ES256);path=x"),
+        ],
+    )
+    redirect = dict(REQUEST, response=[(":status", "302"), ("location", "/search?q=x")])
+    monkeypatch.setattr(hybrid, "read_netlog", lambda path, **kw: [redirect, answered])
+    events = []
+    headers = Headers()
+    inner = Inner()
+    s = HybridSession(inner, "http://127.0.0.1:1", headers, events.append)
+    over_http = {"Content-Type": "text/html; charset=UTF-8", "X-Frame-Options": "SAMEORIGIN"}
+    s._http = Client(
+        [
+            Response(pages.results_page(), headers=over_http),
+            Response(pages.results_page(), headers=over_http),
+        ]
+    )
+    s.__enter__()
+    s._opened_served = True
+    s.search("q", direct=True)  # the browser's, recorded
+    s.suspend()
+    s.resume()
+    s.search("q2", direct=True)
+    s.search("q3", direct=True)
+    reported = [e for e in events if e["event"] == "search_response_headers"]
+    assert [e["side"] for e in reported] == ["browser", "http"]
+    browser = reported[0]
+    assert browser["names"] == ["secure-session-registration", "set-cookie"]
+    assert browser["session_binding"] is True
+    dumped = json.dumps(reported)
+    assert "secret" not in dumped and "ES256" not in dumped and "SAMEORIGIN" not in dumped
+    assert reported[1]["names"] == ["content-type", "x-frame-options"]
+    assert reported[1]["session_binding"] is False
+
+
+def test_only_one_worker_reports_the_http_header_names():
+    headers = Headers()
+    assert headers.claim_http_names() and not headers.claim_http_names()
+
+
 def test_a_netlog_without_a_request_is_not_recorded_again(monkeypatch):
     headers = Headers()
     monkeypatch.setattr(hybrid, "read_netlog", lambda path, **kw: [])
@@ -522,3 +568,69 @@ def test_a_link_request_never_waits_longer_than_asked():
     assert asked.options["timeout"] == 3.5
     links.get("/url?sa=t&url=BBB", hybrid.TIMEOUT + 10)
     assert asked.options["timeout"] == hybrid.TIMEOUT
+
+
+class Streamed(Response):
+    """A response read in chunks; records how far it was read and whether it was closed."""
+
+    def __init__(self, html, chunk=64, sizes=(), **kw):
+        super().__init__(html, **kw)
+        self.encoding = "utf-8"
+        self.body = html.encode("utf-8")
+        self.chunk, self.sizes, self.read, self.closed = chunk, list(sizes), 0, False
+
+    def iter_content(self):
+        i = 0
+        while i < len(self.body):
+            size = self.sizes.pop(0) if self.sizes else self.chunk
+            self.read = i + size
+            yield self.body[i : i + size]
+            i += size
+
+    def close(self):
+        self.closed = True
+
+
+TAIL = "<script>" + "x" * 5000 + "</script>"
+
+
+def test_cut_pages_stop_reading_at_the_footer_and_close_the_stream():
+    page = SERVED.html.replace("</body>", '<div id="sfooter">f</div>' + TAIL + "</body>")
+    streamed = Streamed(page)
+    client = Client([streamed])
+    s, _ = session(client)
+    s._cut_pages = True
+    fetched = s.search("best running shoes", direct=True)
+    assert client.options == {"stream": True}
+    assert streamed.closed and streamed.read < len(streamed.body)
+    assert 'id="sfooter"' in fetched.html and "x" * 5000 not in fetched.html
+    assert s.inner.searched == []  # served over HTTP, parsed from the cut page
+
+
+def test_a_marker_split_across_chunks_still_stops_the_read():
+    page = SERVED.html.replace("</body>", '<div id="sfooter">f</div>' + TAIL + "</body>")
+    at = page.encode().find(b'id="sfooter"')
+    streamed = Streamed(page, chunk=at + 5)  # the marker straddles chunks 1 and 2
+    assert 'id="sfooter"' in hybrid.read_until(streamed, hybrid.FOOTER)
+    assert streamed.read < len(streamed.body) and streamed.closed
+
+
+def test_a_marker_over_three_chunks_with_a_short_middle_one_still_stops_the_read():
+    page = SERVED.html.replace("</body>", '<div id="sfooter">f</div>' + TAIL + "</body>")
+    at = page.encode().find(b'id="sfooter"')
+    streamed = Streamed(page, chunk=4096, sizes=(at + 3, 4))  # marker over chunks 1, 2 and 3
+    assert 'id="sfooter"' in hybrid.read_until(streamed, hybrid.FOOTER)
+    assert streamed.read < len(streamed.body) and streamed.closed
+
+
+def test_a_page_without_the_footer_is_read_whole():
+    streamed = Streamed("<html>check</html>", chunk=4)
+    assert hybrid.read_until(streamed, hybrid.FOOTER) == "<html>check</html>"
+    assert streamed.closed
+
+
+def test_without_cut_pages_the_response_is_read_as_before():
+    client = Client([Response(SERVED.html)])
+    s, _ = session(client)
+    s.search("best running shoes", direct=True)
+    assert client.options == {}

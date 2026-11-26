@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import shlex
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, browser, config, engines, env, hints, installer, warmup
+from .cache import ResultCache
 from .classify import classify
 from .mcp import DEFAULT_LINKS as MCP_LINKS
 from .output import WRITERS, answered, open_writer, use_utf8
@@ -101,6 +103,20 @@ def _parser(prog: str = "serpmaven") -> argparse.ArgumentParser:
         "--price-per-gb",
         type=float,
         help="your proxy price, to print the cost per 1000 pages at the end",
+    )
+    search.add_argument(
+        "--cache-ttl",
+        type=_minutes,
+        default=0,
+        metavar="MINUTES",
+        help="answer a query from an earlier run's results if they are at most this old, "
+        "without the browser or the proxy (default 0: off)",
+    )
+    search.add_argument(
+        "--cache-dir",
+        type=Path,
+        metavar="DIR",
+        help="where --cache-ttl keeps results (default: a cache folder beside the saved login)",
     )
     search.set_defaults(handler=_search)
 
@@ -222,7 +238,8 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--no-clone-cache",
         action="store_true",
-        help="copies carry the cookie jar only, not the browser cache (by default they "
+        help="deprecated, to be removed in the next release: "
+        "copies carry the cookie jar only, not the browser cache (by default they "
         "carry both, until two copies with the cache are refused)",
     )
     p.add_argument(
@@ -244,44 +261,50 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--clone",
         type=int,
-        default=10,
+        default=None,
         metavar="N",
-        help="with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
+        help="deprecated, to be removed in the next release: "
+        "with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
         "served one's cookies instead of warming each one (default 10; 0 turns it off)",
     )
     p.add_argument(
         "--clone-max-age",
         type=float,
-        default=180.0,
+        default=None,
         metavar="MIN",
-        help="minutes copied cookies stay in use (default 180)",
+        help="deprecated, to be removed in the next release: "
+        "minutes copied cookies stay in use (default 180)",
     )
     p.add_argument(
         "--clone-refusals",
         type=int,
-        default=1,
+        default=None,
         metavar="N",
-        help="copies refused on their first query, in a row, that end the copying (default 1)",
+        help="deprecated, to be removed in the next release: "
+        "copies refused on their first query, in a row, that end the copying (default 1)",
     )
     p.add_argument(
         "--input",
         choices=browser.INPUT_MODES,
-        default="type",
-        help="how a query is entered into Google's search box: typed key by key "
+        default=None,
+        help="deprecated, to be removed in the next release: "
+        "how a query is entered into Google's search box: typed key by key "
         "(default), inserted at once, or inserted word by word",
     )
     p.add_argument(
         "--direct",
         choices=DIRECT_MODES,
-        default="all",
-        help="which queries open the results page directly instead of going through "
+        default=None,
+        help="deprecated, to be removed in the next release: "
+        "which queries open the results page directly instead of going through "
         "the search box: all (default), all but the first on each proxy IP, or none; "
         "a language other than en, a country, a location or a filter always opens it directly",
     )
     p.add_argument(
         "--stop-after-read",
         action="store_true",
-        help="leave each results page for about:blank once it is read (experimental: "
+        help="deprecated, to be removed in the next release: "
+        "leave each results page for about:blank once it is read (experimental: "
         "saves traffic Google's late scripts would spend)",
     )
     p.add_argument(
@@ -315,6 +338,12 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="fetch every results page in the browser; by default they come over HTTP "
         "with the browser's cookies, and the browser handles only Google's checks",
+    )
+    p.add_argument(
+        "--cut-http-pages",
+        action="store_true",
+        help="experimental: stop reading a results page that comes over HTTP at Google's "
+        "footer; the scripts after it are not downloaded",
     )
     p.add_argument(
         "--cookies",
@@ -399,9 +428,64 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="log identities to stderr")
 
 
+#: Defaults of the flags on their way out (see `_warn_deprecated`).
+CLONE_DEFAULT, CLONE_MAX_AGE_DEFAULT, CLONE_REFUSALS_DEFAULT = 10, 180.0, 1
+INPUT_DEFAULT, DIRECT_DEFAULT = "type", "all"
+#: Flags that still work and warn: the flag, the attribute argparse gives it, and what
+#: comes instead.
+DEPRECATED_FLAGS = (
+    ("--clone", "clone", "cookie sets (--renew-cookies, on by default) replace profile copies"),
+    (
+        "--clone-max-age",
+        "clone_max_age",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    (
+        "--clone-refusals",
+        "clone_refusals",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    (
+        "--no-clone-cache",
+        "no_clone_cache",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    ("--input", "input", "results pages will always be opened directly"),
+    ("--direct", "direct", "results pages will always be opened directly"),
+    ("--stop-after-read", "stop_after_read", None),
+)
+
+
+def _or(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
+
+def _warn_deprecated(args) -> None:
+    """One line on stderr naming the deprecated flags this run was given and what
+    replaces them."""
+    given = [
+        (flag, instead)
+        for flag, name, instead in DEPRECATED_FLAGS
+        # Identity, not equality: --clone 0 is given, and 0 == False.
+        if (value := getattr(args, name, None)) is not None and value is not False
+    ]
+    if not given:
+        return
+    flags = [flag for flag, _ in given]
+    instead = list(dict.fromkeys(i for _, i in given if i))
+    line = (
+        f"warning: {', '.join(flags)} {'is' if len(flags) == 1 else 'are'} deprecated and will "
+        "be removed in the next release"
+    )
+    if instead:
+        line += "; " + "; ".join(instead)
+    print(line, file=sys.stderr)
+
+
 @contextmanager
 def _proxy_source(args) -> Iterator[Any]:
     """One proxy source per run, shared by every worker; a demo sub-user is deleted on exit."""
+    _warn_deprecated(args)
     kind, url = _checked_source(args)
     if kind == "nodemaven":
         proxy = NodeMavenSource(country=args.country)
@@ -431,6 +515,8 @@ def _checked_source(args) -> tuple[str, str | None]:
             "--country only applies to NodeMaven: remove it, and put the country in "
             "your provider's proxy URL instead"
         )
+    if kind == "url":
+        ProxyTemplate(url)  # a malformed URL fails here, before any file is opened
     return kind, url
 
 
@@ -472,11 +558,11 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         clone_cache=not args.no_clone_cache,
         spare=args.spare,
         # Cookie sets replace the copies of a served profile.
-        clones=0 if args.cookies or args.renew_cookies else args.clone,
-        clone_max_age=args.clone_max_age * 60,
-        clone_refusals=args.clone_refusals,
-        input=args.input,
-        direct=args.direct,
+        clones=0 if args.cookies or args.renew_cookies else _or(args.clone, CLONE_DEFAULT),
+        clone_max_age=_or(args.clone_max_age, CLONE_MAX_AGE_DEFAULT) * 60,
+        clone_refusals=_or(args.clone_refusals, CLONE_REFUSALS_DEFAULT),
+        input=_or(args.input, INPUT_DEFAULT),
+        direct=_or(args.direct, DIRECT_DEFAULT),
         stop_after_read=args.stop_after_read,
         gap_seconds=args.gap,
         headless=args.headless,
@@ -485,6 +571,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         browser_args=browser_args,
         use_relay=not args.no_relay,
         hybrid=not args.no_hybrid,
+        cut_http_pages=args.cut_http_pages,
         save_html=_html_dir(args.save_html, worker),
         resolve_links=not args.no_resolve_links,
         links=args.links,
@@ -573,6 +660,114 @@ def _resume(args, fmt: str, queries: list[str]) -> list[str]:
     return left
 
 
+def _proxy_identity(args) -> str:
+    """Which proxy a run goes through, for the cache key: the source kind, and
+    for a proxy URL a hash of it - its country targeting is part of the URL, and
+    no credential is kept in the clear."""
+    try:
+        kind, url = _source_kind(args)
+    except ValueError:
+        return "none"
+    if not url:
+        return kind
+    return f"{kind}:{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _cache(args) -> ResultCache | None:
+    """The results cache this run reads and fills, or None when --cache-ttl is off."""
+    if not args.cache_ttl:
+        return None
+    settings = _settings(args, pages=args.pages)
+    params = {
+        "hl": settings.hl,
+        "gl": settings.gl,
+        "pages": args.pages,
+        "links": settings.links,
+        "resolve_links": settings.resolve_links,
+        "proxy_country": getattr(args, "country", None),
+        "proxy": _proxy_identity(args),
+        **filter_params(settings),
+    }
+    directory = args.cache_dir or config.directory() / "cache"
+    return ResultCache(directory, args.cache_ttl * 60, params)
+
+
+#: What a results page costs and how fast one browser gets them, for the estimate
+#: printed before a run: low and high ends seen across hours and proxy IPs.
+MB_PER_PAGE = (0.5, 1.5)
+PAGES_PER_HOUR = (250, 400)
+#: A run that has to warm its first proxy IP up spends this much before its first page.
+WARMUP_MB = 60
+
+
+def _estimate(queries: int, pages: int, workers: int, price: float | None) -> str:
+    """One line on what a run of `queries` is likely to cost in traffic and time."""
+    n = queries * pages
+    low, high = (n * mb + WARMUP_MB for mb in MB_PER_PAGE)
+    # A query's pages go to one worker: more workers than queries sit idle.
+    busy = max(min(workers, queries), 1)
+    fast, slow = (n / (rate * busy) * 60 for rate in reversed(PAGES_PER_HOUR))
+    line = (
+        f"estimate: {n} results page{'s' if n != 1 else ''}, roughly {low:.0f}-{high:.0f} MB "
+        f"of proxy traffic and {max(fast, 1):.0f}-{max(slow, 1):.0f} min"
+    )
+    if price is not None:
+        line += f", ${low / 1024 * price:.2f}-{high / 1024 * price:.2f} at ${price:g}/GB"
+    return line
+
+
+def _from_cache(cache: ResultCache | None, queries: list[str]) -> tuple[list, list[str]]:
+    """The cached answers (each a query's records) and the queries left to ask."""
+    if cache is None:
+        return [], queries
+    hits, left = [], []
+    for q in queries:
+        records = cache.get(q) if q.strip() else None
+        if records is not None:
+            hits.append(records)
+        elif q.strip():
+            left.append(q)
+    if hits:
+        print(
+            f"cache: {len(hits)} of {len(hits) + len(left)} queries answered from earlier results",
+            file=sys.stderr,
+        )
+    return hits, left
+
+
+class _Answers:
+    """A query's records as they come; a query answered on every page goes into
+    the cache."""
+
+    def __init__(self, cache: ResultCache | None) -> None:
+        self.cache = cache
+        self.records: dict[str, list[dict[str, Any]]] = {}
+        #: Queries asked twice at the same time (two workers): their pages could
+        #: mix two answers, so neither is kept.
+        self.mixed: set[str] = set()
+
+    def add(self, q: str, record: dict[str, Any], complete: bool) -> None:
+        if self.cache is None:
+            return
+        if record["search_parameters"].get("page", 1) == 1:
+            unfinished = self.records.get(q)
+            if unfinished and unfinished[-1]["search_metadata"]["status"] == "Success":
+                self.mixed.add(q)  # another answer to it is still coming in
+            self.records[q] = []  # a first page starts the query's answer over
+        self.records.setdefault(q, []).append(record)
+        if complete:
+            got = self.records.pop(q)
+            # Pages 1..n in order: the same query asked twice at once on two
+            # workers can leave a list that starts at a later page.
+            pages = [r["search_parameters"].get("page", 1) for r in got]
+            if (
+                q not in self.mixed
+                and pages == list(range(1, len(got) + 1))
+                and all(r["search_metadata"]["status"] == "Success" for r in got)
+            ):
+                self.cache.put(q, got)
+
+
 def _search(args) -> int:
     fmt = args.format or _format_for(args.output)
     queries = _read_queries(args)
@@ -583,47 +778,70 @@ def _search(args) -> int:
     # Every option is checked before anything starts: no browser download, no
     # demo sub-user, and no existing output file emptied for a bad option.
     _settings(args, pages=args.pages)
-    _ready(args)
+    cache = _cache(args)
+    cached, queries = _from_cache(cache, queries)
+    if queries:
+        _ready(args)  # before the output file is opened, so a refusal empties nothing
     progress = None
     if not args.verbose:
-        total = sum(1 for q in queries if q.strip())
+        total = len(cached) + sum(1 for q in queries if q.strip())
         progress = Progress(total=total, breaker=Settings().breaker)
     failed: set[str] = set()
     code = 0
-    with _proxy_source(args) as proxy:
-        mode = "a" if args.resume else "w"
-        stream = args.output.open(mode, encoding="utf-8", newline="") if args.output else sys.stdout
-        writer = open_writer(fmt, stream)
-        try:
-            for attempt in range(PATIENT_WAITS + 1):
-                if args.workers != 1:
-                    scraper = Pool(
-                        lambda i: _build(
-                            args, proxy, pages=args.pages, worker=i, progress=progress
-                        )[0],
-                        args.workers,
-                    )
-                else:
-                    scraper, _ = _build(args, proxy, pages=args.pages, progress=progress)
-                done, stopped = _run(
-                    scraper, queries, writer, progress, failed, args.price_per_gb, args.pages
-                )
-                code = 3 if stopped else 0
-                queries = [q for q in queries if q.strip() and q.strip() not in done]
-                again = stopped == "breaker" and args.patient
-                if not again or attempt == PATIENT_WAITS or not queries:
-                    break
+    mode = "a" if args.resume else "w"
+    stream = args.output.open(mode, encoding="utf-8", newline="") if args.output else sys.stdout
+    writer = open_writer(fmt, stream)
+    try:
+        for record in (r for records in cached for r in records):
+            writer.write(record)
+            if progress is not None:
+                progress.record(record)
+        if queries:
+            if progress is not None:  # the human output; -v keeps stderr machine-readable
                 print(
-                    f"waiting {args.patient:g} min, then going on with the {len(queries)} "
-                    f"queries left ({attempt + 1} of {PATIENT_WAITS})",
+                    _estimate(
+                        sum(1 for q in queries if q.strip()),
+                        args.pages,
+                        args.workers,
+                        args.price_per_gb,
+                    ),
                     file=sys.stderr,
                 )
-                time.sleep(args.patient * 60)
-        finally:
-            writer.close()
-            if args.output:
-                stream.close()
+            code = _search_live(args, queries, writer, progress, failed, cache)
+    finally:
+        writer.close()
+        if args.output:
+            stream.close()
     return code or (4 if failed else 0)
+
+
+def _search_live(args, queries, writer, progress, failed: set[str], cache) -> int:
+    """The queries not answered from the cache, through the proxy; the exit code."""
+    code = 0
+    with _proxy_source(args) as proxy:
+        for attempt in range(PATIENT_WAITS + 1):
+            if args.workers != 1:
+                scraper = Pool(
+                    lambda i: _build(args, proxy, pages=args.pages, worker=i, progress=progress)[0],
+                    args.workers,
+                )
+            else:
+                scraper, _ = _build(args, proxy, pages=args.pages, progress=progress)
+            done, stopped = _run(
+                scraper, queries, writer, progress, failed, args.price_per_gb, args.pages, cache
+            )
+            code = 3 if stopped else 0
+            queries = [q for q in queries if q.strip() and q.strip() not in done]
+            again = stopped == "breaker" and args.patient
+            if not again or attempt == PATIENT_WAITS or not queries:
+                break
+            print(
+                f"waiting {args.patient:g} min, then going on with the {len(queries)} "
+                f"queries left ({attempt + 1} of {PATIENT_WAITS})",
+                file=sys.stderr,
+            )
+            time.sleep(args.patient * 60)
+    return code
 
 
 def _last_page(record: dict[str, Any], pages: int) -> bool:
@@ -641,19 +859,23 @@ def _stop_reason(exc: ExitsRefused) -> str:
 
 
 def _run(
-    scraper, queries, writer, progress, failed: set[str], price, pages: int = 1
+    scraper, queries, writer, progress, failed: set[str], price, pages: int = 1, cache=None
 ) -> tuple[set[str], str | None]:
     """One scraper over the queries: the queries it answered with every page (the
     last one is page `pages` or has no next page on Google), and what stopped it -
     "breaker", "proxy" (the account was refused) or "worker" (a pool worker crashed),
     the last two being what waiting does not change - or None. `failed` keeps the
-    queries whose last answer failed."""
+    queries whose last answer failed. A query answered on every page goes into
+    `cache` when there is one."""
     done: set[str] = set()
     stopped = None
+    answers = _Answers(cache)
     try:
         for record in scraper.run(queries):
             q = record["search_parameters"]["q"].strip()
-            if record["search_metadata"]["status"] == "Success":
+            ok = record["search_metadata"]["status"] == "Success"
+            answers.add(q, record, ok and _last_page(record, pages))
+            if ok:
                 failed.discard(q)
                 if _last_page(record, pages):
                     done.add(q)
