@@ -49,6 +49,9 @@ GOOD_SERIES = 20
 #: browser takes the query, and a served page takes one or two.
 TIMEOUT = 20
 GOOGLE = "https://www.google.com/search"
+#: Where a results page's content ends: past Google's footer the page carries
+#: only scripts, which nothing here reads.
+FOOTER = b'id="sfooter"'
 
 
 # -- request headers ------------------------------------------------------------
@@ -215,6 +218,23 @@ def impersonate_for(request: dict | None) -> str:
     return f"chrome{usable[-1] if usable else targets[0]}"
 
 
+def read_until(response: Any, marker: bytes) -> str:
+    """The body of a streamed response up to and including the chunk that holds
+    `marker`; the rest is never read, and the stream is closed. A body without
+    the marker (a check page, an error) is read whole."""
+    chunks: list[bytes] = []
+    tail = b""
+    try:
+        for chunk in response.iter_content():
+            chunks.append(chunk)
+            if marker in tail + chunk:
+                break
+            tail = (tail + chunk)[-len(marker) :]
+    finally:
+        response.close()
+    return b"".join(chunks).decode(getattr(response, "encoding", None) or "utf-8", "replace")
+
+
 class Headers:
     """The run's request template and its state, shared by every exit (and
     every worker in a pool)."""
@@ -341,10 +361,12 @@ class HybridSession:
         on_event=None,
         *,
         pages_over_http: bool = True,
+        cut_pages: bool = False,
     ) -> None:
         self.inner = inner
         self.name = getattr(inner, "name", "patchright")
         self._pages_over_http = pages_over_http
+        self._cut_pages = cut_pages
         self._proxy_url = proxy_url
         self._headers = headers
         self._emit = on_event or (lambda event: None)
@@ -551,9 +573,13 @@ class HybridSession:
             self._cookie = self.inner.google_cookies()
         mark = time.monotonic()
         try:
-            response = self._client().get(
-                url, headers=replay_headers(self._headers.request, self._cookie)
-            )
+            headers = replay_headers(self._headers.request, self._cookie)
+            if self._cut_pages:
+                response = self._client().get(url, headers=headers, stream=True)
+                html = read_until(response, FOOTER)
+            else:
+                response = self._client().get(url, headers=headers)
+                html = response.text
         except Exception as exc:
             self._end_series("error", type(exc).__name__)
             return None
@@ -566,7 +592,6 @@ class HybridSession:
             else:
                 self._emit(response_headers_event("http", names))
         self._cookie = fold_cookies(self._cookie, set_cookie_headers(response), self._deleted)
-        html = response.text
         verdict = classify(response.url, html, response.status_code)
         if not verdict.served:
             self._end_series("check" if verdict.kind == "no_js" else verdict.kind)

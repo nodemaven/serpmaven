@@ -72,6 +72,7 @@ SAMPLES = {
     "--stop-after-read": Sample(field="stop_after_read"),
     "--gap": Sample("0,1", "gap_seconds"),
     "--no-hybrid": Sample(field="hybrid"),
+    "--cut-http-pages": Sample(field="cut_http_pages"),
     "--hl": Sample("de", "hl"),
     "--gl": Sample("de", "gl"),
     "--location": Sample("Austin,Texas,United States", "location"),
