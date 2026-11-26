@@ -35,7 +35,7 @@ from .classify import Verdict, classify
 
 # Split out of this module; imported here so `serpmaven.scraper` keeps them.
 from .donors import DONOR_REFUSALS, DONOR_SLOTS, KEEP_HOURS, RENEW_EVERY, Donors  # noqa: F401
-from .errors import describe_error
+from .errors import _CREDENTIALS, describe_error  # noqa: F401
 from .hybrid import Headers, HybridSession
 from .links import LinkResolver
 from .output import build_record
