@@ -402,8 +402,9 @@ memory or a crashed browser drops it at once.
 
 **Starting from saved cookies.** `--cookies FILE` gives every new proxy IP the
 Google cookies of a browser Google already serves, so it skips the warm-up; the
-file can come from another machine. `--renew-cookies N` replaces that set with
-the cookies of a served proxy IP every N queries, so it stays fresh, and without
+file can come from another machine. `--renew-cookies N` tries every N queries to
+replace that set with the cookies of a served proxy IP (skipped when they hold
+no `NID`), so it stays fresh, and without
 `--cookies` the first renewal that yields Google's cookies ends the warm-ups. It is
 on by default, every 5 queries, so a run warms up its first proxy IP and rarely
 another. `--renew-cookies 0` turns renewal off: a set given with `--cookies` stays
@@ -411,7 +412,7 @@ in use until two proxy IPs in a row are refused on their first query with it,
 and without sets every new proxy IP warms up (unless `--warmup off`).
 `--cookies-out DIR` saves each renewed set for the next run, readable by its
 owner only. If every set is refused in turn, new proxy IPs are warmed up again,
-and with `--renew-cookies` the next renewal brings the sets back. A file is a
+and with `--renew-cookies` the next successful renewal brings the sets back. A file is a
 JSON list of Playwright cookie records, or an object with that list under
 `"cookies"`, and must hold Google's `NID` cookie.
 
