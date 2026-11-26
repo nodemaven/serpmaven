@@ -221,7 +221,8 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--no-clone-cache",
         action="store_true",
-        help="copies carry the cookie jar only, not the browser cache (by default they "
+        help="deprecated, to be removed in the next release: "
+        "copies carry the cookie jar only, not the browser cache (by default they "
         "carry both, until two copies with the cache are refused)",
     )
     p.add_argument(
@@ -243,44 +244,50 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--clone",
         type=int,
-        default=10,
+        default=None,
         metavar="N",
-        help="with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
+        help="deprecated, to be removed in the next release: "
+        "with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
         "served one's cookies instead of warming each one (default 10; 0 turns it off)",
     )
     p.add_argument(
         "--clone-max-age",
         type=float,
-        default=180.0,
+        default=None,
         metavar="MIN",
-        help="minutes copied cookies stay in use (default 180)",
+        help="deprecated, to be removed in the next release: "
+        "minutes copied cookies stay in use (default 180)",
     )
     p.add_argument(
         "--clone-refusals",
         type=int,
-        default=1,
+        default=None,
         metavar="N",
-        help="copies refused on their first query, in a row, that end the copying (default 1)",
+        help="deprecated, to be removed in the next release: "
+        "copies refused on their first query, in a row, that end the copying (default 1)",
     )
     p.add_argument(
         "--input",
         choices=browser.INPUT_MODES,
-        default="type",
-        help="how a query is entered into Google's search box: typed key by key "
+        default=None,
+        help="deprecated, to be removed in the next release: "
+        "how a query is entered into Google's search box: typed key by key "
         "(default), inserted at once, or inserted word by word",
     )
     p.add_argument(
         "--direct",
         choices=DIRECT_MODES,
-        default="all",
-        help="which queries open the results page directly instead of going through "
+        default=None,
+        help="deprecated, to be removed in the next release: "
+        "which queries open the results page directly instead of going through "
         "the search box: all (default), all but the first on each proxy IP, or none; "
         "a language other than en, a country, a location or a filter always opens it directly",
     )
     p.add_argument(
         "--stop-after-read",
         action="store_true",
-        help="leave each results page for about:blank once it is read (experimental: "
+        help="deprecated, to be removed in the next release: "
+        "leave each results page for about:blank once it is read (experimental: "
         "saves traffic Google's late scripts would spend)",
     )
     p.add_argument(
@@ -396,9 +403,64 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="log identities to stderr")
 
 
+#: Defaults of the flags on their way out (see `_warn_deprecated`).
+CLONE_DEFAULT, CLONE_MAX_AGE_DEFAULT, CLONE_REFUSALS_DEFAULT = 10, 180.0, 1
+INPUT_DEFAULT, DIRECT_DEFAULT = "type", "all"
+#: Flags that still work and warn: the flag, the attribute argparse gives it, and what
+#: comes instead.
+DEPRECATED_FLAGS = (
+    ("--clone", "clone", "cookie sets (--renew-cookies, on by default) replace profile copies"),
+    (
+        "--clone-max-age",
+        "clone_max_age",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    (
+        "--clone-refusals",
+        "clone_refusals",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    (
+        "--no-clone-cache",
+        "no_clone_cache",
+        "cookie sets (--renew-cookies, on by default) replace profile copies",
+    ),
+    ("--input", "input", "results pages will always be opened directly"),
+    ("--direct", "direct", "results pages will always be opened directly"),
+    ("--stop-after-read", "stop_after_read", None),
+)
+
+
+def _or(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
+
+def _warn_deprecated(args) -> None:
+    """One line on stderr naming the deprecated flags this run was given and what
+    replaces them."""
+    given = [
+        (flag, instead)
+        for flag, name, instead in DEPRECATED_FLAGS
+        # Identity, not equality: --clone 0 is given, and 0 == False.
+        if (value := getattr(args, name, None)) is not None and value is not False
+    ]
+    if not given:
+        return
+    flags = [flag for flag, _ in given]
+    instead = list(dict.fromkeys(i for _, i in given if i))
+    line = (
+        f"warning: {', '.join(flags)} {'is' if len(flags) == 1 else 'are'} deprecated and will "
+        "be removed in the next release"
+    )
+    if instead:
+        line += "; " + "; ".join(instead)
+    print(line, file=sys.stderr)
+
+
 @contextmanager
 def _proxy_source(args) -> Iterator[Any]:
     """One proxy source per run, shared by every worker; a demo sub-user is deleted on exit."""
+    _warn_deprecated(args)
     kind, url = _checked_source(args)
     if kind == "nodemaven":
         proxy = NodeMavenSource(country=args.country)
@@ -469,11 +531,11 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         clone_cache=not args.no_clone_cache,
         spare=args.spare,
         # Cookie sets replace the copies of a served profile.
-        clones=0 if args.cookies or args.renew_cookies else args.clone,
-        clone_max_age=args.clone_max_age * 60,
-        clone_refusals=args.clone_refusals,
-        input=args.input,
-        direct=args.direct,
+        clones=0 if args.cookies or args.renew_cookies else _or(args.clone, CLONE_DEFAULT),
+        clone_max_age=_or(args.clone_max_age, CLONE_MAX_AGE_DEFAULT) * 60,
+        clone_refusals=_or(args.clone_refusals, CLONE_REFUSALS_DEFAULT),
+        input=_or(args.input, INPUT_DEFAULT),
+        direct=_or(args.direct, DIRECT_DEFAULT),
         stop_after_read=args.stop_after_read,
         gap_seconds=args.gap,
         headless=args.headless,
