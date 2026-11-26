@@ -432,6 +432,16 @@ def test_a_new_slot_leaves_other_builds_and_broken_files_alone(tmp_path):
     assert json.loads((tmp_path / "donor_2.json").read_text())["t"] > time.time() - 60
 
 
+def test_a_huge_timestamp_is_a_broken_file_not_a_crash(tmp_path):
+    from serpmaven.scraper import Donors
+
+    nid = {"name": "NID", "value": "v", "domain": ".google.com", "path": "/"}
+    (tmp_path / "donor_0.json").write_text(json.dumps({"t": 10**400, "cookies": [nid]}))
+    assert cli.kept_cookie_sets(str(tmp_path)) == ()
+    Donors((), str(tmp_path)).renew((nid,), "e", lambda e: None)
+    assert (tmp_path / "donor_1.json").exists()  # the broken file keeps its name
+
+
 def test_the_browser_build_names_engine_channel_and_package_version():
     from importlib.metadata import version
 

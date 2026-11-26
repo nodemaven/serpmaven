@@ -599,6 +599,8 @@ def kept_cookie_sets(
         if not re.fullmatch(r"donor_\d+\.json", name):
             continue
         path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue  # a FIFO or device: opening it could block
         try:
             with open(path, encoding="utf-8") as fh:
                 saved = json.load(fh)
@@ -612,7 +614,7 @@ def kept_cookie_sets(
             ):
                 continue
             found.append((written, name, browser.load_cookies(path)))
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, AttributeError, OverflowError):
             continue
     found.sort(key=lambda item: -item[0])
     return tuple((cookies, name) for _, name, cookies in found)

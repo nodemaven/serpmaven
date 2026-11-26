@@ -1,5 +1,6 @@
 """The identity lifecycle, with a fake browser and no clock."""
 
+import json
 import os
 import tempfile
 
@@ -1728,8 +1729,10 @@ def test_a_written_set_is_readable_by_its_owner_only(tmp_path):
     from serpmaven.scraper import Donors
 
     # Files left at the paths, readable by anyone, do not pass their mode on.
+    # (A stale set: a new slot writes over that one, not over a broken file.)
+    stale = json.dumps({"t": 0, "cookies": []})
     for name in ("donor_0.json", "donor_0.json.tmp"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
+        (tmp_path / name).write_text(stale, encoding="utf-8")
         (tmp_path / name).chmod(0o644)
     Donors((), out=str(tmp_path)).renew(DONOR, "exit0", lambda e: None)
     assert (tmp_path / "donor_0.json").stat().st_mode & 0o777 == 0o600

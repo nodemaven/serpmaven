@@ -670,6 +670,8 @@ class Donors:
             path = os.path.join(self.out, name)
             if not os.path.exists(path):
                 return name
+            if not os.path.isfile(path):
+                continue  # a FIFO or device: opening it could block
             try:
                 with open(path, encoding="utf-8") as fh:
                     written = json.load(fh).get("t")
@@ -680,7 +682,7 @@ class Donors:
                     and now - written > KEEP_HOURS * 3600
                 ):
                     return name  # stale: nothing reads it any more
-            except (OSError, ValueError, AttributeError):
+            except (OSError, ValueError, AttributeError, OverflowError):
                 pass  # unreadable or broken: left for a person to look at
 
     def _write(self, at: int, cookies: tuple[dict, ...]) -> str | None:
