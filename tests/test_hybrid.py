@@ -25,9 +25,10 @@ REQUEST = {
 
 
 class Response:
-    def __init__(self, html, status=200, url=SEARCH, set_cookie=()):
+    def __init__(self, html, status=200, url=SEARCH, set_cookie=(), headers=()):
         self.text, self.status_code, self.url = html, status, url
         self.headers = Cookies(set_cookie)
+        self.headers.update(headers)
 
 
 class Cookies(dict):
@@ -414,6 +415,51 @@ def test_the_next_page_of_an_http_page_opens_that_query_when_http_is_off():
     headers.disabled = True  # another worker turned the run to the browser
     s.next_page()
     assert s.inner.opened == [("a b", 10)]
+
+
+def test_response_header_names_are_reported_once_a_side_without_values(monkeypatch):
+    answered = dict(
+        REQUEST,
+        response=[
+            (":status", "200"),
+            ("set-cookie", "NID=secret"),
+            ("Secure-Session-Registration", "(ES256);path=x"),
+        ],
+    )
+    redirect = dict(REQUEST, response=[(":status", "302"), ("location", "/search?q=x")])
+    monkeypatch.setattr(hybrid, "read_netlog", lambda path, **kw: [redirect, answered])
+    events = []
+    headers = Headers()
+    inner = Inner()
+    s = HybridSession(inner, "http://127.0.0.1:1", headers, events.append)
+    over_http = {"Content-Type": "text/html; charset=UTF-8", "X-Frame-Options": "SAMEORIGIN"}
+    s._http = Client(
+        [
+            Response(pages.results_page(), headers=over_http),
+            Response(pages.results_page(), headers=over_http),
+        ]
+    )
+    s.__enter__()
+    s._opened_served = True
+    s.search("q", direct=True)  # the browser's, recorded
+    s.suspend()
+    s.resume()
+    s.search("q2", direct=True)
+    s.search("q3", direct=True)
+    reported = [e for e in events if e["event"] == "search_response_headers"]
+    assert [e["side"] for e in reported] == ["browser", "http"]
+    browser = reported[0]
+    assert browser["names"] == ["secure-session-registration", "set-cookie"]
+    assert browser["session_binding"] is True
+    dumped = json.dumps(reported)
+    assert "secret" not in dumped and "ES256" not in dumped and "SAMEORIGIN" not in dumped
+    assert reported[1]["names"] == ["content-type", "x-frame-options"]
+    assert reported[1]["session_binding"] is False
+
+
+def test_only_one_worker_reports_the_http_header_names():
+    headers = Headers()
+    assert headers.claim_http_names() and not headers.claim_http_names()
 
 
 def test_a_netlog_without_a_request_is_not_recorded_again(monkeypatch):
