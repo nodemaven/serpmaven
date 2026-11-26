@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import math
 import os
@@ -461,33 +460,31 @@ def _source_kind(args) -> tuple[str, str | None]:
     )
 
 
-def _cookie_sets(args) -> tuple[tuple[tuple[dict, ...], ...], str | None]:
-    """The cookie sets new proxy IPs start from, and where renewed ones go.
+def _cookie_sets(args) -> tuple[tuple[tuple[dict, ...], ...], str | None, tuple[str, ...]]:
+    """The cookie sets new proxy IPs start from, where renewed ones go, and the
+    file in that folder each set came from (none for `--cookies` files).
 
     `--cookies` files win. Otherwise, while renewal is on, sets saved by an
     earlier run in the config folder (or `--cookies-out`) are used when at
     most KEEP_HOURS old, and this run's renewals are saved there in turn."""
     if args.cookies:
-        return tuple(browser.load_cookies(f) for f in args.cookies), args.cookies_out
+        return tuple(browser.load_cookies(f) for f in args.cookies), args.cookies_out, ()
     if not args.renew_cookies or args.no_keep_cookies:
-        return (), args.cookies_out
+        return (), args.cookies_out, ()
     folder = args.cookies_out or str(config.cookies_dir())
     # Read once: every worker of a pool must start from the same sets.
     kept = getattr(args, "_kept_sets", None)
     if kept is None:
         kept = args._kept_sets = kept_cookie_sets(folder)
-    return kept, folder
+    return tuple(c for c, _ in kept), folder, tuple(name for _, name in kept)
 
 
 def kept_cookie_sets(
     folder: str, max_age: float = KEEP_HOURS * 3600
-) -> tuple[tuple[dict, ...], ...]:
+) -> tuple[tuple[tuple[dict, ...], str], ...]:
     """The `donor_<n>.json` sets in `folder` written at most `max_age` seconds
-    ago, newest first; unreadable, foreign or spent files are skipped.
-
-    The files are renumbered to match, newest `donor_0.json`: a renewal writes
-    slot n's set to `donor_<n>.json`, which must be the file that set came from,
-    not a fresher one."""
+    ago, newest first, each with its file name; unreadable, foreign or spent
+    files are skipped. Nothing on disk is changed."""
     found = []
     try:
         names = os.listdir(folder)
@@ -507,40 +504,11 @@ def kept_cookie_sets(
                 or not 0 <= now - written <= max_age
             ):
                 continue
-            found.append((written, path, browser.load_cookies(path)))
+            found.append((written, name, browser.load_cookies(path)))
         except (OSError, ValueError, AttributeError):
             continue
     found.sort(key=lambda item: -item[0])
-    _renumber(folder, [path for _, path, _ in found])
-    return tuple(cookies for _, _, cookies in found)
-
-
-def _renumber(folder: str, paths: list[str]) -> None:
-    """Move `paths` to `donor_0.json`, `donor_1.json`, ... in their order,
-    through temporary names so no file is overwritten on the way. When a move
-    fails, the files already moved are put back where they were; the sets in
-    memory are used either way."""
-    wanted = [os.path.join(folder, f"donor_{i}.json") for i in range(len(paths))]
-    if [os.path.normcase(p) for p in paths] == [os.path.normcase(w) for w in wanted]:
-        return
-    parked: list[tuple[str, str]] = []  # (temporary name, original path)
-    placed: list[tuple[str, str]] = []  # (temporary name, final name)
-    try:
-        for i, path in enumerate(paths):
-            tmp = os.path.join(folder, f".donor_renumber_{i}.tmp")
-            os.replace(path, tmp)
-            parked.append((tmp, path))
-        for (tmp, _), target in zip(parked, wanted, strict=True):
-            os.replace(tmp, target)
-            placed.append((tmp, target))
-    except OSError:
-        # All or nothing: the files go back to the names they had.
-        for tmp, target in reversed(placed):
-            with contextlib.suppress(OSError):
-                os.replace(target, tmp)
-        for tmp, path in reversed(parked):
-            with contextlib.suppress(OSError):
-                os.replace(tmp, path)
+    return tuple((cookies, name) for _, name, cookies in found)
 
 
 def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
@@ -551,7 +519,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
     if args.links is not None and args.links < 0:
         raise ValueError("--links must be 0 or more")
     browser_args = tuple(args.browser_args) + tuple(shlex.split(env.get("BROWSER_ARGS", "")))
-    donors, donors_out = _cookie_sets(args)
+    donors, donors_out, donor_files = _cookie_sets(args)
     return Settings(
         engine=args.engine,
         warmup=args.warmup,
@@ -588,6 +556,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         donors=donors,
         renew_donors_every=args.renew_cookies,
         donors_out=donors_out,
+        donor_files=donor_files,
     )
 
 

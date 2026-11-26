@@ -199,7 +199,8 @@ serpmaven search "best running shoes" -o results.jsonl
 
 The first query of a first run takes a few minutes while the first proxy IP warms
 up on a few ordinary pages; the terminal shows each step. A run within a day of
-the last one starts from the cookies that run kept and skips it. Later queries take seconds, and
+one that renewed its cookie set (every 5 served queries by default) starts from
+that set and skips it. Later queries take seconds, and
 new proxy IPs start from its cookies. Every run ends with the pages served and
 the traffic used, warm-up apart from the pages.
 

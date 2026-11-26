@@ -104,6 +104,7 @@ SAMPLES = {
 #: Fields of `Settings` no option above sets, and where they come from.
 NOT_FROM_AN_OPTION = {
     "pages": "search passes --pages itself; serve and mcp take it from each request",
+    "donor_files": "the file names of the kept sets, read with them",
     "max_exits_per_query": "library only",
     "breaker": "library only",
     "dwell_seconds": "library only",

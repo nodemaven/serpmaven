@@ -113,7 +113,7 @@ class Pool:
         headers = Headers()
         # One store of cookie sets: a refusal or a renewal on any worker moves
         # the set every worker starts its next exit from.
-        donors = Donors(first.donors, first.donors_out)
+        donors = Donors(first.donors, first.donors_out, files=first.donor_files)
         for scraper in self._scrapers:
             scraper.share(breaker, templates, headers, donors)
         threads = [

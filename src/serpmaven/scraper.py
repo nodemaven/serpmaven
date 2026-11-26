@@ -314,6 +314,10 @@ class Settings:
     #: Directory each renewed set is written to, as `donor_<n>.json`, for the
     #: next run's `donors`.
     donors_out: str | None = None
+    #: The file in `donors_out` each set of `donors` came from, slot by slot: a
+    #: renewal of slot n writes over `donor_files[n]`, so it replaces its own
+    #: set's file and not another one. Slots past it take unused names.
+    donor_files: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:  # noqa: C901
         engines.get(self.engine)
@@ -536,18 +540,25 @@ class Donors:
     the set it holds now."""
 
     def __init__(
-        self, sets: tuple[tuple[dict, ...], ...], out: str | None = None, slots: int = DONOR_SLOTS
+        self,
+        sets: tuple[tuple[dict, ...], ...],
+        out: str | None = None,
+        slots: int = DONOR_SLOTS,
+        files: tuple[str, ...] = (),
     ) -> None:
         self.sets = list(sets)
         self.out = out
         self.slots = max(slots, 1)
+        #: The file in `out` each slot writes to; see `Settings.donor_files`.
+        self._files = list(files)[: len(self.sets)]
         self._generation = [0] * len(self.sets)
         #: The exit each slot was last renewed from; None for a set given up front.
         self._source: list[str | None] = [None] * len(self.sets)
         #: When each slot was last renewed, in renewals; the least recent one is
-        #: overwritten once all slots are filled.
-        self._renewed = [0] * len(self.sets)
-        self._clock = 0
+        #: overwritten once all slots are filled. Sets given up front come newest
+        #: first, so they start ranked that way.
+        self._renewed = list(range(len(self.sets), 0, -1))
+        self._clock = len(self.sets)
         self._at = 0
         self._refused = 0
         #: Sets refused DONOR_REFUSALS times in a row since a set was last
@@ -636,7 +647,16 @@ class Donors:
         """Write a set for the next run's `donors`, readable by its owner only;
         the error, if the write failed - the set in memory is still used."""
         assert self.out is not None
-        path = os.path.join(self.out, f"donor_{at}.json")
+        while len(self._files) <= at:
+            taken = set(self._files)
+            self._files.append(
+                next(
+                    f"donor_{n}.json"
+                    for n in range(len(taken) + 1)
+                    if f"donor_{n}.json" not in taken
+                )
+            )
+        path = os.path.join(self.out, self._files[at])
         tmp = None
         try:
             os.makedirs(self.out, exist_ok=True)
@@ -1018,7 +1038,9 @@ class Scraper:
         )
         self._owns_templates = True
         self._breaker = Breaker(self.settings.breaker)
-        self._donors = Donors(self.settings.donors, self.settings.donors_out)
+        self._donors = Donors(
+            self.settings.donors, self.settings.donors_out, files=self.settings.donor_files
+        )
         self._headers = Headers()
         self._saved = 0
         self.stats = Stats()

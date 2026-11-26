@@ -1686,13 +1686,14 @@ def test_refusals_of_exits_from_a_replaced_set_do_not_count_against_the_new_one(
     s0, s1, fresh = (({"name": "NID", "value": v, "domain": ".google.com"},) for v in "01f")
     d = Donors((s0, s1), slots=2)
     assert d.current() == (0, 0, s0)  # an exit starts from slot 0, generation 0
-    d.renew(fresh, "exit9", lambda e: None)  # slot 0 now holds a new set
-    d.refused(0, 0, lambda e: None)
-    d.refused(0, 0, lambda e: None)
-    assert d.current() == (0, 1, fresh)
-    d.refused(0, 1, lambda e: None)
-    d.refused(0, 1, lambda e: None)
-    assert d.current() == (1, 0, s1)
+    # Sets given up front count as newest first: the renewal replaces slot 1.
+    d.renew(fresh, "exit9", lambda e: None)
+    d.refused(1, 0, lambda e: None)
+    d.refused(1, 0, lambda e: None)
+    assert d.current() == (1, 1, fresh)  # refusals of the old set in slot 1 do not count
+    d.refused(1, 1, lambda e: None)
+    d.refused(1, 1, lambda e: None)
+    assert d.current() == (0, 0, s0)
 
 
 def test_a_set_that_cannot_be_written_is_still_used(tmp_path):
