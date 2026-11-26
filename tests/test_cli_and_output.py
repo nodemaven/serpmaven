@@ -177,24 +177,24 @@ def test_workers_share_one_demo_sub_user(monkeypatch):
     assert len(made) == 1 and given == made * 3 and closed == [False]
 
 
-def test_a_bad_output_path_still_deletes_the_demo_sub_user(tmp_path, monkeypatch):
-    closed = []
+def test_a_bad_output_path_stops_the_run_before_a_demo_sub_user_is_made(tmp_path, monkeypatch):
+    made = []
 
     class Demo:
         sticky = True
 
         def __init__(self, **kw):
-            pass
+            made.append(kw)
 
         def close(self, keep=False):
-            closed.append(keep)
+            pass
 
     monkeypatch.setattr(cli, "NodeMavenDemoSource", Demo)
     monkeypatch.setattr(cli, "_build", lambda args, proxy, **kw: (None, ""))
     missing = tmp_path / "no-such-dir" / "out.jsonl"
     with pytest.raises(OSError):
         cli.main(["search", "q", "--nodemaven-demo", "-o", str(missing)])
-    assert closed == [False]
+    assert made == []
 
 
 def test_cookie_sets_are_renewed_by_default_and_zero_turns_renewal_off():
@@ -337,3 +337,20 @@ def test_cookies_is_repeatable_and_leaves_the_queries_alone():
     assert args.cookies == ["a.json", "b.json"]
     with pytest.raises(SystemExit):
         parser.parse_args(["search", "q", "--renew-cookies", "-1"])
+
+
+def test_entry_flags_warn_and_still_apply(capsys):
+    parse = cli._parser().parse_args
+    args = parse(["search", "q", "--no-proxy", "--direct", "none", "--input", "insert"])
+    cli._warn_deprecated(args)
+    err = capsys.readouterr().err
+    assert err.startswith("warning: --input, --direct are deprecated")
+    assert "results pages will always be opened directly" in err and err.count("\n") == 1
+    settings = cli._build(args, None)[0].settings
+    assert settings.direct == "none" and settings.input == "insert"
+    settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
+    assert settings.direct == "all" and settings.input == "type"
+    cli._warn_deprecated(parse(["search", "q", "--no-proxy", "--stop-after-read"]))
+    assert capsys.readouterr().err == (
+        "warning: --stop-after-read is deprecated and will be removed in the next release\n"
+    )

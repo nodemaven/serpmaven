@@ -195,6 +195,9 @@ class Settings:
     #: and use the browser only for Google's checks (see `hybrid`). Needs the
     #: relay; an engine that cannot do it ignores it.
     hybrid: bool = True
+    #: Stop reading a results page that comes over HTTP at Google's footer and
+    #: close the stream: what follows is scripts the parser does not read.
+    cut_http_pages: bool = False
     #: Sets of Google cookies from browsers Google already serves, as
     #: Playwright cookie records. Every new exit starts with the current set
     #: instead of walking the warm-up: it carries Google's trust to a new IP,
@@ -1128,7 +1131,19 @@ class Scraper:
                 self._retire(verdict.kind)
                 yield record
                 return
-            yield self._served(query, page, fetched, verdict, identity, started, before, saved)
+            record = self._served(query, page, fetched, verdict, identity, started, before, saved)
+            if self._poisoned(identity, query, record):
+                # Later pages are judged like the first: a poisoned page 2
+                # ends the query's pages and the exit, and is not returned.
+                self._finish(record)
+                self.stats.pages_served -= 1
+                if record["search_metadata"]["fetched_with"] == "http":
+                    self.stats.pages_http -= 1
+                self.stats.exits_poisoned += 1
+                self._retire("poisoned")
+                yield self._failed(query, page, None, "results unrelated to the query", identity)
+                return
+            yield record
 
     def _links(self):
         if not self.settings.resolve_links or self._resolver_factory is None:
@@ -1386,6 +1401,7 @@ class Scraper:
             self._headers,
             self._emit,
             pages_over_http=self.settings.hybrid,
+            cut_pages=self.settings.cut_http_pages,
         )
 
     def _relay_for(self, upstream: dict[str, str] | None):
