@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import __version__, browser, config, engines, env, hints, installer, warmup
+from . import __version__, browser, config, engines, env, hints, installer, usage, warmup
 from .cache import ResultCache
 from .classify import classify
 from .mcp import DEFAULT_LINKS as MCP_LINKS
@@ -478,6 +478,7 @@ def _proxy_source(args) -> Iterator[Any]:
     """One proxy source per run, shared by every worker; a demo sub-user is deleted on exit."""
     _warn_deprecated(args)
     kind, url = _checked_source(args)
+    usage.ping(args.command, kind)
     if kind == "nodemaven":
         proxy = NodeMavenSource(country=args.country)
     elif kind == "nodemaven-demo":
