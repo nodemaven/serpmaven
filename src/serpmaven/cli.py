@@ -6,6 +6,8 @@ import argparse
 import hashlib
 import json
 import math
+import os
+import re
 import shlex
 import sys
 import time
@@ -26,6 +28,7 @@ from .progress import Progress
 from .proxy import NodeMavenDemoSource, NodeMavenSource, ProxyTemplate
 from .scraper import (
     DIRECT_MODES,
+    KEEP_HOURS,
     RENEW_EVERY,
     ExitsRefused,
     ProxyRefused,
@@ -366,7 +369,15 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--cookies-out",
         metavar="DIR",
-        help="write each renewed cookie set to DIR, to start the next run with --cookies",
+        help="write each renewed cookie set to DIR, to start the next run with --cookies; "
+        "without --cookies, the next run also starts from the sets in DIR",
+    )
+    p.add_argument(
+        "--no-keep-cookies",
+        action="store_true",
+        help="neither start from the cookie sets an earlier run saved (up to "
+        f"{KEEP_HOURS} hours old) nor save this run's in the config folder; "
+        "an explicit --cookies-out is still written",
     )
     p.add_argument("--hl", default="en", help="interface language of the results, e.g. de")
     p.add_argument(
@@ -541,6 +552,92 @@ def _source_kind(args) -> tuple[str, str | None]:
     )
 
 
+#: The package each engine's browser comes with: its version pins the build.
+ENGINE_PACKAGES = {"patchright": "patchright", "cloak": "cloakbrowser"}
+
+
+def browser_build(args) -> str:
+    """Which browser build this run uses, without starting it: the engine, the
+    channel (or the engine's own bundled browser) and its package's version.
+
+    Kept cookie sets are tied to it: a set made by one build is refused more
+    often by another. A `--channel` browser that updates itself keeps its
+    label across its own updates."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        made_by = version(ENGINE_PACKAGES.get(args.engine, args.engine))
+    except PackageNotFoundError:
+        made_by = "unknown"
+    return f"{args.engine}/{args.channel or 'bundled'}/{made_by}"
+
+
+def _cookie_sets(args) -> tuple[tuple[tuple[dict, ...], ...], str | None, tuple[str, ...]]:
+    """The cookie sets new proxy IPs start from, where renewed ones go, and the
+    file in that folder each set came from (none for `--cookies` files).
+
+    `--cookies` files win. Otherwise, while renewal is on, sets saved by an
+    earlier run in the config folder (or `--cookies-out`) are used when at
+    most KEEP_HOURS old, and this run's renewals are saved there in turn."""
+    if args.cookies:
+        return tuple(browser.load_cookies(f) for f in args.cookies), args.cookies_out, ()
+    if not args.renew_cookies or args.no_keep_cookies:
+        return (), args.cookies_out, ()
+    folder = args.cookies_out or str(config.cookies_dir())
+    # Read once: every worker of a pool must start from the same sets.
+    kept = getattr(args, "_kept_sets", None)
+    if kept is None:
+        kept = args._kept_sets = kept_cookie_sets(folder, build=browser_build(args))
+    return tuple(c for c, _ in kept), folder, tuple(name for _, name in kept)
+
+
+def _has_cookie_sets(args) -> bool:
+    """Whether new proxy IPs will start from cookie sets; a bad `--cookies`
+    file counts as none here and is reported when the run starts."""
+    try:
+        return bool(_cookie_sets(args)[0])
+    except (OSError, ValueError):
+        return False
+
+
+def kept_cookie_sets(
+    folder: str, max_age: float = KEEP_HOURS * 3600, build: str | None = None
+) -> tuple[tuple[tuple[dict, ...], str], ...]:
+    """The `donor_<n>.json` sets in `folder` written at most `max_age` seconds
+    ago, newest first, each with its file name; unreadable, foreign or spent
+    files, and with `build` the sets another browser build made, are skipped.
+    Nothing on disk is changed."""
+    found = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return ()
+    now = time.time()
+    for name in names:
+        if not re.fullmatch(r"donor_\d+\.json", name):
+            continue
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue  # a FIFO or device: opening it could block
+        try:
+            with open(path, encoding="utf-8") as fh:
+                saved = json.load(fh)
+            written = saved.get("t")
+            if build is not None and saved.get("browser") != build:
+                continue
+            if (
+                isinstance(written, bool)
+                or not isinstance(written, (int, float))
+                or not 0 <= now - written <= max_age
+            ):
+                continue
+            found.append((written, name, browser.load_cookies(path)))
+        except (OSError, ValueError, AttributeError, OverflowError):
+            continue
+    found.sort(key=lambda item: -item[0])
+    return tuple((cookies, name) for _, name, cookies in found)
+
+
 def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
     """The scraper's settings from the options; raises ValueError on a bad one."""
     problem = locale_problem(args.hl, args.gl)
@@ -549,6 +646,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
     if args.links is not None and args.links < 0:
         raise ValueError("--links must be 0 or more")
     browser_args = tuple(args.browser_args) + tuple(shlex.split(env.get("BROWSER_ARGS", "")))
+    donors, donors_out, donor_files = _cookie_sets(args)
     return Settings(
         engine=args.engine,
         warmup=args.warmup,
@@ -584,9 +682,11 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         cr=args.cr,
         lr=args.lr,
         lean=bool(args.lean),
-        donors=tuple(browser.load_cookies(f) for f in args.cookies or ()),
+        donors=donors,
         renew_donors_every=args.renew_cookies,
-        donors_out=args.cookies_out,
+        donors_out=donors_out,
+        donor_files=donor_files,
+        donor_build=browser_build(args),
     )
 
 
@@ -700,10 +800,16 @@ PAGES_PER_HOUR = (250, 400)
 WARMUP_MB = 60
 
 
-def _estimate(queries: int, pages: int, workers: int, price: float | None) -> str:
-    """One line on what a run of `queries` is likely to cost in traffic and time."""
+def _estimate(
+    queries: int, pages: int, workers: int, price: float | None, has_sets: bool = False
+) -> str:
+    """One line on what a run of `queries` is likely to cost in traffic and time.
+    With cookie sets to start from, the low end has no warm-up: the high end
+    keeps it, since a set can be refused."""
     n = queries * pages
     low, high = (n * mb + WARMUP_MB for mb in MB_PER_PAGE)
+    if has_sets:
+        low -= WARMUP_MB
     # A query's pages go to one worker: more workers than queries sit idle.
     busy = max(min(workers, queries), 1)
     fast, slow = (n / (rate * busy) * 60 for rate in reversed(PAGES_PER_HOUR))
@@ -804,6 +910,7 @@ def _search(args) -> int:
                         args.pages,
                         args.workers,
                         args.price_per_gb,
+                        _has_cookie_sets(args),
                     ),
                     file=sys.stderr,
                 )

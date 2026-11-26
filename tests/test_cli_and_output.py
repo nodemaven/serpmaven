@@ -1,5 +1,6 @@
 import io
 import json
+import time
 
 import pages
 import pytest
@@ -345,6 +346,159 @@ def test_cookies_is_repeatable_and_leaves_the_queries_alone():
     assert args.cookies == ["a.json", "b.json"]
     with pytest.raises(SystemExit):
         parser.parse_args(["search", "q", "--renew-cookies", "-1"])
+
+
+def _set(name_value, written):
+    """A kept set as this run's browser build would have written it."""
+    cookie = {"name": "NID", "value": name_value, "domain": ".google.com", "path": "/"}
+    build = cli.browser_build(cli._parser().parse_args(["search", "q", "--no-proxy"]))
+    return {"t": written, "browser": build, "cookies": [cookie]}
+
+
+def test_a_run_starts_from_the_sets_an_earlier_run_kept_and_keeps_its_own(tmp_path):
+    import time
+
+    from serpmaven import config
+
+    folder = config.cookies_dir()
+    folder.mkdir(parents=True)
+    now = time.time()
+    (folder / "donor_0.json").write_text(json.dumps(_set("older", now - 3600)))
+    (folder / "donor_1.json").write_text(json.dumps(_set("newer", now - 60)))
+    (folder / "donor_2.json").write_text(json.dumps(_set("stale", now - 25 * 3600)))
+    (folder / "donor_3.json").write_text("not json")
+    (folder / "notes.json").write_text(json.dumps(_set("foreign", now)))
+    parse = cli._parser().parse_args
+    settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
+    assert [s[0]["value"] for s in settings.donors] == ["newer", "older"]
+    assert settings.donors_out == str(folder)
+    assert settings.clones == 0
+
+
+def test_a_renewal_writes_back_to_the_file_its_set_came_from(tmp_path):
+    from serpmaven.scraper import Donors
+
+    def keep(name, hours_ago, value):
+        cookies = [{"name": "NID", "value": value, "domain": ".google.com", "path": "/"}]
+        record = {"t": time.time() - hours_ago * 3600, "cookies": cookies}
+        (tmp_path / name).write_text(json.dumps(record), encoding="utf-8")
+
+    keep("donor_0.json", 20, "old")
+    keep("donor_1.json", 1, "fresh")
+    kept = cli.kept_cookie_sets(str(tmp_path))
+    assert [(c[0]["value"], name) for c, name in kept] == [
+        ("fresh", "donor_1.json"),
+        ("old", "donor_0.json"),
+    ]
+    donors = Donors(
+        tuple(c for c, _ in kept), str(tmp_path), slots=2, files=tuple(n for _, n in kept)
+    )
+    renewed = ({"name": "NID", "value": "new", "domain": ".google.com", "path": "/"},)
+    donors.renew(renewed, "exit0", lambda e: None)  # all slots full: the oldest set goes
+
+    def on_disk(name):
+        return json.loads((tmp_path / name).read_text(encoding="utf-8"))["cookies"][0]["value"]
+
+    assert on_disk("donor_0.json") == "new" and on_disk("donor_1.json") == "fresh"
+
+
+def test_sets_another_browser_build_made_are_not_used(tmp_path):
+    from serpmaven.scraper import Donors
+
+    nid = {"name": "NID", "value": "v", "domain": ".google.com", "path": "/"}
+    Donors((), str(tmp_path), build="patchright/bundled/1.0").renew((nid,), "e", lambda e: None)
+    saved = json.loads((tmp_path / "donor_0.json").read_text(encoding="utf-8"))
+    assert saved["browser"] == "patchright/bundled/1.0"
+    assert len(cli.kept_cookie_sets(str(tmp_path), build="patchright/bundled/1.0")) == 1
+    assert cli.kept_cookie_sets(str(tmp_path), build="patchright/chrome/1.0") == ()
+    assert cli.kept_cookie_sets(str(tmp_path), build="patchright/bundled/2.0") == ()
+
+
+def test_a_new_slot_leaves_other_builds_and_broken_files_alone(tmp_path):
+    from serpmaven.scraper import Donors
+
+    nid = {"name": "NID", "value": "new", "domain": ".google.com", "path": "/"}
+    other = {"t": time.time(), "browser": "patchright/chrome/1.0", "cookies": [nid]}
+    stale = {"t": time.time() - 48 * 3600, "browser": "patchright/bundled/1.0", "cookies": [nid]}
+    (tmp_path / "donor_0.json").write_text(json.dumps(other), encoding="utf-8")
+    (tmp_path / "donor_1.json").write_text("{broken", encoding="utf-8")
+    (tmp_path / "donor_2.json").write_text(json.dumps(stale), encoding="utf-8")
+    Donors((), str(tmp_path), build="patchright/bundled/1.0").renew((nid,), "e", lambda e: None)
+    assert json.loads((tmp_path / "donor_0.json").read_text())["browser"] == "patchright/chrome/1.0"
+    assert (tmp_path / "donor_1.json").read_text() == "{broken"
+    assert (
+        json.loads((tmp_path / "donor_2.json").read_text())["browser"] == "patchright/bundled/1.0"
+    )
+    assert json.loads((tmp_path / "donor_2.json").read_text())["t"] > time.time() - 60
+
+
+def test_a_huge_timestamp_is_a_broken_file_not_a_crash(tmp_path):
+    from serpmaven.scraper import Donors
+
+    nid = {"name": "NID", "value": "v", "domain": ".google.com", "path": "/"}
+    (tmp_path / "donor_0.json").write_text(json.dumps({"t": 10**400, "cookies": [nid]}))
+    assert cli.kept_cookie_sets(str(tmp_path)) == ()
+    Donors((), str(tmp_path)).renew((nid,), "e", lambda e: None)
+    assert (tmp_path / "donor_1.json").exists()  # the broken file keeps its name
+
+
+def test_the_browser_build_names_engine_channel_and_package_version():
+    from importlib.metadata import version
+
+    parse = cli._parser().parse_args
+    made_by = version("patchright")
+    bundled = parse(["search", "q", "--no-proxy"])
+    chrome = parse(["search", "q", "--no-proxy", "--channel", "chrome"])
+    assert cli.browser_build(bundled) == f"patchright/bundled/{made_by}"
+    assert cli.browser_build(chrome) == f"patchright/chrome/{made_by}"
+    # and the run's settings carry it, so renewed sets are written with it
+    assert cli._build(bundled, None)[0].settings.donor_build == f"patchright/bundled/{made_by}"
+    assert cli._build(chrome, None)[0].settings.donor_build == f"patchright/chrome/{made_by}"
+
+
+def test_kept_sets_are_left_alone_when_turned_off_or_given_explicitly(tmp_path):
+    import time
+
+    from serpmaven import config
+
+    folder = config.cookies_dir()
+    folder.mkdir(parents=True)
+    (folder / "donor_0.json").write_text(json.dumps(_set("kept", time.time())))
+    given = tmp_path / "given.json"
+    given.write_text(json.dumps(_set("given", time.time())))
+    parse = cli._parser().parse_args
+
+    def settings(argv):
+        return cli._build(parse(["search", "q", "--no-proxy", *argv]), None)[0].settings
+
+    off = settings(["--no-keep-cookies"])
+    assert off.donors == () and off.donors_out is None
+    no_renewal = settings(["--renew-cookies", "0"])
+    assert no_renewal.donors == () and no_renewal.donors_out is None
+    explicit = settings(["--cookies", str(given)])
+    assert [s[0]["value"] for s in explicit.donors] == ["given"]
+    assert explicit.donors_out is None
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "donor_0.json").write_text(json.dumps(_set("from-out", time.time())))
+    chosen = settings(["--cookies-out", str(out)])
+    assert [s[0]["value"] for s in chosen.donors] == ["from-out"]
+    assert chosen.donors_out == str(out)
+
+
+def test_every_worker_of_a_run_starts_from_the_same_kept_sets():
+    import time
+
+    from serpmaven import config
+
+    folder = config.cookies_dir()
+    folder.mkdir(parents=True)
+    path = folder / "donor_0.json"
+    path.write_text(json.dumps(_set("first", time.time())))
+    args = cli._parser().parse_args(["search", "q", "--no-proxy"])
+    first = cli._settings(args, worker=0).donors
+    path.write_text(json.dumps(_set("second", time.time())))
+    assert cli._settings(args, worker=1).donors == first
 
 
 def test_profile_copy_flags_still_work_and_warn_once_named(capsys):

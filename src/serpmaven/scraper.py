@@ -112,6 +112,9 @@ DONOR_REFUSALS = 2
 #: Cookie sets renewal keeps, each from a different served exit, so a refused
 #: set has fresh ones to hand over to instead of one set overwritten in place.
 DONOR_SLOTS = 4
+#: How old a cookie set an earlier run saved may be and still start a run.
+#: A set kept 24 hours on the same machine was served as often as a fresh one.
+KEEP_HOURS = 24
 #: Served queries on an exit between renewals of the cookie set, by default.
 #: An exit started from a set gets results as good as one warmed up from scratch,
 #: at a fraction of the traffic, so the first set is taken early: a short session,
@@ -317,6 +320,13 @@ class Settings:
     #: Directory each renewed set is written to, as `donor_<n>.json`, for the
     #: next run's `donors`.
     donors_out: str | None = None
+    #: The file in `donors_out` each set of `donors` came from, slot by slot: a
+    #: renewal of slot n writes over `donor_files[n]`, so it replaces its own
+    #: set's file and not another one. Slots past it take unused names.
+    donor_files: tuple[str, ...] = ()
+    #: The browser build this run uses (see `cli.browser_build`), written with
+    #: each renewed set so a later run with another build leaves it alone.
+    donor_build: str | None = None
     #: True asks Google's Web results only (`udm=14`) on every results page:
     #: the organic links without the AI Overview, "People also ask" or related
     #: searches, on a lighter page.
@@ -544,18 +554,27 @@ class Donors:
     the set it holds now."""
 
     def __init__(
-        self, sets: tuple[tuple[dict, ...], ...], out: str | None = None, slots: int = DONOR_SLOTS
+        self,
+        sets: tuple[tuple[dict, ...], ...],
+        out: str | None = None,
+        slots: int = DONOR_SLOTS,
+        files: tuple[str, ...] = (),
+        build: str | None = None,
     ) -> None:
         self.sets = list(sets)
         self.out = out
+        self.build = build
         self.slots = max(slots, 1)
+        #: The file in `out` each slot writes to; see `Settings.donor_files`.
+        self._files = list(files)[: len(self.sets)]
         self._generation = [0] * len(self.sets)
         #: The exit each slot was last renewed from; None for a set given up front.
         self._source: list[str | None] = [None] * len(self.sets)
         #: When each slot was last renewed, in renewals; the least recent one is
-        #: overwritten once all slots are filled.
-        self._renewed = [0] * len(self.sets)
-        self._clock = 0
+        #: overwritten once all slots are filled. Sets given up front come newest
+        #: first, so they start ranked that way.
+        self._renewed = list(range(len(self.sets), 0, -1))
+        self._clock = len(self.sets)
         self._at = 0
         self._refused = 0
         #: Sets refused DONOR_REFUSALS times in a row since a set was last
@@ -640,11 +659,44 @@ class Donors:
         if error:
             emit({"event": "donor_write_failed", "set": at, "error": error})
 
+    def _free_name(self) -> str:
+        """A `donor_<n>.json` name for a new slot. Not one of this run's, and
+        not a file in `out` that may still be worth something - a set of
+        another browser build, a broken or unreadable file: only a set older
+        than KEEP_HOURS is written over."""
+        taken = set(self._files)
+        now = time.time()
+        n = 0
+        while True:
+            name = f"donor_{n}.json"
+            n += 1
+            if name in taken:
+                continue
+            path = os.path.join(self.out, name)
+            if not os.path.exists(path):
+                return name
+            if not os.path.isfile(path):
+                continue  # a FIFO or device: opening it could block
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    written = json.load(fh).get("t")
+                if (
+                    isinstance(written, (int, float))
+                    and not isinstance(written, bool)
+                    and 0 <= now - written
+                    and now - written > KEEP_HOURS * 3600
+                ):
+                    return name  # stale: nothing reads it any more
+            except (OSError, ValueError, AttributeError, OverflowError):
+                pass  # unreadable or broken: left for a person to look at
+
     def _write(self, at: int, cookies: tuple[dict, ...]) -> str | None:
         """Write a set for the next run's `donors`, readable by its owner only;
         the error, if the write failed - the set in memory is still used."""
         assert self.out is not None
-        path = os.path.join(self.out, f"donor_{at}.json")
+        while len(self._files) <= at:
+            self._files.append(self._free_name())
+        path = os.path.join(self.out, self._files[at])
         tmp = None
         try:
             os.makedirs(self.out, exist_ok=True)
@@ -652,7 +704,10 @@ class Donors:
             # whatever sat at the path before, the result is owner-only.
             fd, tmp = tempfile.mkstemp(prefix=f".donor_{at}.", suffix=".tmp", dir=self.out)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"t": time.time(), "cookies": list(cookies)}, fh)
+                record = {"t": time.time(), "cookies": list(cookies)}
+                if self.build is not None:
+                    record["browser"] = self.build
+                json.dump(record, fh)
             os.replace(tmp, path)
             tmp = None
         except OSError as exc:
@@ -1026,7 +1081,12 @@ class Scraper:
         )
         self._owns_templates = True
         self._breaker = Breaker(self.settings.breaker)
-        self._donors = Donors(self.settings.donors, self.settings.donors_out)
+        self._donors = Donors(
+            self.settings.donors,
+            self.settings.donors_out,
+            files=self.settings.donor_files,
+            build=self.settings.donor_build,
+        )
         self._headers = Headers()
         self._saved = 0
         self.stats = Stats()

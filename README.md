@@ -197,8 +197,10 @@ serpmaven login --proxy "http://USER-session-{session}:PASS@gate.example.com:700
 serpmaven search "best running shoes" -o results.jsonl
 ```
 
-The first query takes a few minutes while the first proxy IP warms up on a few
-ordinary pages; the terminal shows each step. Later queries take seconds, and
+The first query of a first run takes a few minutes while the first proxy IP warms
+up on a few ordinary pages; the terminal shows each step. A run within a day of
+one that renewed its cookie set (every 5 served queries by default) starts from
+that set and skips it. Later queries take seconds, and
 new proxy IPs start from its cookies. Every run ends with the pages served and
 the traffic used, warm-up apart from the pages.
 
@@ -371,9 +373,10 @@ To build it yourself: `docker build -t serpmaven .`
 ## How it works
 
 1. **New identity:** a sticky proxy session and a fresh browser profile.
-2. **Warm-up:** the first proxy IP opens a few ordinary pages, staying on each
-   for 20-45 seconds. Later ones start from the Google cookies of a served proxy
-   IP and are warmed up only when no such set is accepted.
+2. **Warm-up:** with no cookie set to start from (kept by an earlier run or given
+   with `--cookies`), the first proxy IP opens a few ordinary pages, staying on
+   each for 20-45 seconds. Later ones start from the Google cookies of a served
+   proxy IP and are warmed up only when no such set is accepted.
 3. **Search:** the first query on a proxy IP goes through the browser. Once Google
    serves it, the next pages come over HTTPS with the browser's cookies, until
    Google asks for its check again.
@@ -404,14 +407,15 @@ its memory from growing over a long hold. A browser error on a search is retried
 once on the same proxy IP before it is dropped; a network error, running out of
 memory or a crashed browser drops it at once.
 
-**Copying cookies.** With `--renew-cookies 0`, the command line copies the
+**Copying cookies.** Deprecated, removed in the next release: cookie sets
+(below) replace it. With `--renew-cookies 0`, the command line copies the
 cookies of the first proxy IP Google serves and starts new proxy IPs from that
 copy, on new sticky sessions, instead of warming each one; all workers share
 the copy. Google's acceptance follows the cookies more than the address, so a
 copy usually starts out served and costs a few MB instead of a full warm-up. A
 copy waits 40-60 seconds after its browser starts before the first search.
 
-**Copying the cache.** Pages get cheaper as a proxy IP is held, because the
+**Copying the cache.** Deprecated with copies. Pages get cheaper as a proxy IP is held, because the
 browser cache fills with Google's shared scripts and images. Copies carry that
 cache too, so a new proxy IP starts with cheap pages, and the copy is refreshed
 from the held one at each browser restart, when its cache is warm. If two
@@ -423,10 +427,15 @@ Google cookies of a browser Google already serves, so it skips the warm-up; the
 file can come from another machine. `--renew-cookies N` replaces that set with
 the cookies of a served proxy IP every N queries, so it stays fresh, and without
 `--cookies` it ends the warm-ups after the first renewal. It is on by default,
-every 5 queries, so a run warms up its first proxy IP and rarely another;
-`--renew-cookies 0` goes back to copies of the first served profile.
-`--cookies-out DIR` saves each renewed set for the next run, readable by its
-owner only. If every set is refused in turn, new proxy IPs are warmed up again,
+every 5 queries, so a run warms up at most its first proxy IP and rarely another;
+`--renew-cookies 0` goes back to copies of the first served profile and keeps
+no sets. Renewed sets are kept in the config folder, readable by their owner
+only, and the next run starts from those up to 24 hours old, so it skips the
+warm-up too, if it uses the same browser build (engine, channel and version):
+a set made by another build is refused more often, so after an update a run
+starts fresh. `--cookies-out DIR` keeps them in DIR instead. `--no-keep-cookies`
+neither reads nor keeps them in the config folder; a `--cookies-out DIR` given
+with it is still written, since it was asked for. If every set is refused in turn, new proxy IPs are warmed up again,
 and with `--renew-cookies` the next renewal brings the sets back. A file is a
 JSON list of Playwright cookie records, or an object with that list under
 `"cookies"`, and must hold Google's `NID` cookie.
@@ -479,8 +488,9 @@ The defaults come from measurements in
 | `--clone-refusals N` | 1 | Deprecated, removed in the next release. Copies refused in a row on their first query that end the copying |
 | `--no-clone-cache` | | Deprecated, removed in the next release. Copies carry cookies only, not the browser cache |
 | `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
-| `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
-| `--cookies-out DIR` | | Write each renewed cookie set to DIR, for the next run's `--cookies` |
+| `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off, keeps no sets and brings back `--clone` |
+| `--cookies-out DIR` | | Keep renewed cookie sets in DIR instead of the config folder; the next run starts from them, or pass them to `--cookies` |
+| `--no-keep-cookies` | | Do not start from cookie sets an earlier run kept, and do not keep this run's in the config folder; a `--cookies-out DIR` given with it is still written |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |
 | `--spare N` | 0 | Proxy IPs warmed in the background so a retired one is replaced at once; each costs a warm-up |
 | `--direct` | `all` | Deprecated, removed in the next release. Open results pages directly: `all`, `follow-ups` (all but the first query on each proxy IP), `none` |
