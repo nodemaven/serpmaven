@@ -685,139 +685,6 @@ def test_an_exit_specific_proxy_refusal_does_not_stop_the_run():
     assert len(FakeSession.opened) == 2
 
 
-def clone_settings(**overrides):
-    values = dict(
-        clones=3,
-        renew_donors_every=0,
-        max_queries_per_exit=2,
-        gap_seconds=(0, 0),
-        dwell_seconds=(0, 0),
-        settle_seconds=(45, 45),
-    )
-    values.update(overrides)
-    return Settings(**values)
-
-
-def test_new_exits_start_from_a_copy_of_the_served_profile():
-    events, slept = [], []
-    s = scraper([[SERVED, SERVED], [SERVED]], clone_settings(), events=events, sleep=slept.append)
-    records = list(s.run(["a", "b", "c"]))
-    assert [r["search_metadata"]["status"] for r in records] == ["Success"] * 3
-    seed, copy = FakeSession.opened
-    assert seed.suspended == 1  # closed once for the copy, then reopened
-    assert copy.options["profile_dir"] != seed.profile_dir
-    assert copy.marker() == seed.marker()
-    assert copy.has("Local State") and copy.has(COOKIES + "-journal")
-    assert copy.has(CACHE)  # the jar and the HTTP cache travel
-    assert copy.visited == []  # no warm-up of its own
-    assert copy.searched == ["c"]
-    assert slept.count(45) == 2  # after reopening the seed, and before the copy's first query
-    assert s.stats.clones == 1
-    assert [e["event"] for e in events].count("template") == 1
-
-
-def test_a_copy_refused_on_its_first_query_ends_the_copying():
-    events = []
-    s = scraper([[SERVED, SERVED], [REFUSED], [SERVED]], clone_settings(), events=events)
-    records = list(s.run(["a", "b", "c"]))
-    assert [r["search_metadata"]["status"] for r in records] == ["Success"] * 3
-    seed, copy, fresh = FakeSession.opened
-    assert copy.searched == ["c"] and copy.visited == []
-    assert len(fresh.visited) == 6  # warmed from scratch again
-    dropped = [e for e in events if e["event"] == "template_dropped"]
-    assert dropped[0]["reason"] == "a copy was refused on its first query"
-    assert not os.path.exists(copy.profile_dir) or copy.closed
-
-
-def test_the_template_survives_fewer_refused_copies_than_allowed():
-    events = []
-    s = scraper(
-        [[SERVED, SERVED], [REFUSED], [SERVED], [REFUSED], [REFUSED], [SERVED]],
-        clone_settings(clones=10, max_queries_per_exit=1, clone_refusals=2),
-        events=events,
-    )
-    records = list(s.run(["a", "b", "c"]))
-    assert [r["search_metadata"]["status"] for r in records] == ["Success"] * 3
-    seed, first, second, third, fourth, fresh = FakeSession.opened
-    # refused, served (resets), refused, refused: the template goes on the
-    # second refusal in a row, and the next exit is warmed from scratch.
-    assert [x.visited for x in (first, second, third, fourth)] == [[], [], [], []]
-    assert len(fresh.visited) == 6
-    dropped = [e["reason"] for e in events if e["event"] == "template_dropped"]
-    assert dropped[0] == "2 copies in a row were refused on their first query"
-
-
-def test_clone_refusals_must_be_reachable():
-    with pytest.raises(ValueError, match="clone_refusals"):
-        Settings(clone_refusals=0)
-    with pytest.raises(ValueError, match="below breaker"):
-        Settings(clone_refusals=6, breaker=6)
-    assert Settings(clone_refusals=5).clone_refusals == 5
-
-
-def test_a_template_past_its_age_is_not_used(monkeypatch):
-    import serpmaven.scraper as module
-
-    clock = iter(range(0, 10**6, 100))  # every reading is 100 s after the last
-    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
-    s = scraper([[SERVED, SERVED], [SERVED]], clone_settings(clone_max_age=150))
-    list(s.run(["a", "b", "c"]))
-    seed, fresh = FakeSession.opened
-    assert len(fresh.visited) == 6
-
-
-def test_copies_stop_when_the_template_is_used_up():
-    s = scraper(
-        [[SERVED, SERVED], [SERVED, SERVED], [SERVED]],
-        clone_settings(clones=1),
-    )
-    list(s.run(["a", "b", "c", "d", "e"]))
-    seed, copy, fresh = FakeSession.opened
-    assert copy.visited == [] and len(fresh.visited) == 6
-    assert s.stats.clones == 1
-
-
-def test_no_profile_is_copied_when_copying_is_off_or_nothing_is_left_to_ask():
-    list(scraper([[SERVED, SERVED]]).run(["a", "b"]))
-    assert FakeSession.opened[0].suspended == 0
-    list(scraper([[SERVED]], clone_settings()).run(["a"]))
-    assert FakeSession.opened[0].suspended == 0
-
-
-def test_the_template_is_removed_when_the_run_ends():
-    events = []
-    s = scraper([[SERVED, SERVED, SERVED]], clone_settings(max_queries_per_exit=5), events=events)
-    list(s.run(["a", "b"]))
-    dropped = [e for e in events if e["event"] == "template_dropped"]
-    assert dropped and dropped[-1]["reason"] == "run finished"
-
-
-def test_an_exit_capped_on_its_first_query_still_leaves_a_template():
-    slept = []
-    s = scraper([[SERVED], [SERVED]], clone_settings(max_queries_per_exit=1), sleep=slept.append)
-    list(s.run(["a", "b"]))
-    seed, copy = FakeSession.opened
-    assert seed.suspended == 1 and seed.closed
-    assert copy.visited == [] and copy.searched == ["b"]
-    assert slept.count(45) == 1  # only before the copy's first query
-
-
-def test_a_profile_with_no_cookie_database_leaves_no_template():
-    class NoJar(FakeSession):
-        def suspend(self):
-            os.remove(os.path.join(self.profile_dir, COOKIES))
-            return super().suspend()
-
-    events = []
-    s = scraper([[SERVED], [SERVED], [SERVED]], clone_settings(), events=events, cls=NoJar)
-    records = list(s.run(["a", "b", "c"]))
-    assert [r["search_metadata"]["status"] for r in records] == ["Success"] * 3
-    failed = [e for e in events if e["event"] == "template_failed"]
-    assert len(failed) == 2 and "no cookie database" in failed[0]["error"]
-    assert s.stats.clones == 0
-    assert all(len(f.visited) == 6 for f in FakeSession.opened)  # each warmed itself
-
-
 def test_a_record_says_where_its_time_went():
     timed = Fetched(SEARCH, 200, pages.results_page(), timings={"type": 2.5, "load": 3.0})
     record = next(iter(scraper([[timed]]).run(["a"])))
@@ -871,10 +738,6 @@ def test_a_retry_after_a_browser_error_types_from_the_front_page():
     settings = Settings(direct="follow-ups", gap_seconds=(0, 0), dwell_seconds=(0, 0))
     list(scraper([[SERVED, TimeoutError("click"), SERVED]], settings).run(["a", "b"]))
     assert FakeSession.opened[0].direct == [False, True, False]
-
-
-def test_copied_cookies_are_used_for_three_hours_by_default():
-    assert Settings().clone_max_age == 3 * 3600
 
 
 def test_traffic_is_split_by_host_for_the_warm_up_the_pages_and_the_run():
@@ -1052,17 +915,27 @@ def test_the_browser_restarts_on_its_own_exit_every_n_searches_and_settles():
     assert sum(40 <= x <= 60 for x in slept) == 2
 
 
-def test_search_can_leave_the_restart_and_the_template_copy_for_settle():
+def upkeep_settings(**overrides):
+    base = dict(
+        gap_seconds=(0, 0),
+        dwell_seconds=(0, 0),
+        restart_every=1,
+        max_queries_per_exit=10,
+        renew_donors_every=0,
+    )
+    return Settings(**{**base, **overrides})
+
+
+def test_search_can_leave_the_restart_for_settle():
     events = []
-    settings = clone_settings(restart_every=1, max_queries_per_exit=10)
-    s = scraper([[SERVED, SERVED]], settings, events=events)
+    s = scraper([[SERVED, SERVED]], upkeep_settings(), events=events)
     s.search("a", settle=False)
     seed = FakeSession.opened[0]
     assert seed.restarts == [] and seed.suspended == 0  # the answer comes first
-    assert "template" not in [e["event"] for e in events]
+    assert "restart" not in [e["event"] for e in events]
     s.settle()
     assert seed.restarts == [1]
-    assert [e["event"] for e in events].count("template") == 1  # left by the restart
+    assert [e["event"] for e in events].count("restart") == 1
     s.settle()  # nothing left to do
     assert seed.restarts == [1]
     s.close()
@@ -1070,20 +943,20 @@ def test_search_can_leave_the_restart_and_the_template_copy_for_settle():
 
 def test_the_next_search_first_settles_what_the_last_one_left():
     events = []
-    s = scraper([[SERVED, SERVED]], clone_settings(max_queries_per_exit=10), events=events)
+    s = scraper([[SERVED, SERVED]], upkeep_settings(), events=events)
     s.search("a", settle=False)
     s.search("b", settle=False)
     names = [(e["event"], e.get("q")) for e in events]
-    assert names.index(("template", None)) < names.index(("query", "b"))
+    assert names.index(("restart", None)) < names.index(("query", "b"))
     s.close()
 
 
 def test_search_does_its_upkeep_inline_by_default():
     events = []
-    s = scraper([[SERVED]], clone_settings(max_queries_per_exit=10), events=events)
+    s = scraper([[SERVED, SERVED]], upkeep_settings(), events=events)
     s.search("a")
     assert FakeSession.opened[0].suspended == 1
-    assert [e["event"] for e in events].count("template") == 1
+    assert [e["event"] for e in events].count("restart") == 1
     s.close()
 
 
@@ -1116,57 +989,10 @@ def test_restart_every_must_not_be_negative():
         Settings(restart_every=-1)
 
 
-def test_copies_leave_the_cache_behind_when_clone_cache_is_off():
-    s = scraper([[SERVED, SERVED], [SERVED]], clone_settings(clone_cache=False))
-    list(s.run(["a", "b", "c"]))
-    seed, copy = FakeSession.opened
-    assert copy.marker() == seed.marker() and not copy.has(CACHE)
-
-
-def test_two_refused_copies_with_the_cache_switch_the_cache_off_for_the_run():
-    events = []
-    scripts = [[SERVED, SERVED], [REFUSED], [SERVED, SERVED], [REFUSED], [SERVED, SERVED], [SERVED]]
-    s = scraper(scripts, clone_settings(), events=events)
-    records = list(s.run(list("abcdefg")))
-    assert [r["search_metadata"]["status"] for r in records] == ["Success"] * 7
-    assert [e["refused"] for e in events if e["event"] == "clone_cache_off"] == [2]
-    last = FakeSession.opened[-1]
-    assert last.options["profile_dir"] and last.searched == ["g"] and not last.has(CACHE)
-    assert [e["cache"] for e in events if e["event"] == "template"] == [True, True, False]
-
-
-def test_a_restart_leaves_the_warm_profile_as_the_new_template():
-    events = []
-    settings = clone_settings(restart_every=2, max_queries_per_exit=5)
-    s = scraper([[SERVED] * 5], settings, events=events)
-    list(s.run(list("abcde")))
-    made = [e for e in events if e["event"] == "template"]
-    assert [bool(e.get("renewed")) for e in made] == [False, True, True]
-    assert [e["template"] for e in events if e["event"] == "restart"] == [True, True]
-
-
 def test_no_restart_after_the_last_query_of_a_run():
     settings = Settings(gap_seconds=(0, 0), dwell_seconds=(0, 0), restart_every=2)
     list(scraper([[SERVED] * 4], settings).run(list("abcd")))
     assert FakeSession.opened[0].restarts == [2]
-
-
-def test_a_refused_cache_copy_counts_after_the_template_was_renewed():
-    from serpmaven.scraper import Templates
-
-    events = []
-    templates = Templates(copies=3, max_age=3600)
-    first = tempfile.mkdtemp()
-    templates.put(first, cache=True)
-    _, generation, cache = templates.checkout(events.append)
-    assert cache
-    renewed = tempfile.mkdtemp()
-    assert templates.renew(renewed, cache=True)  # another worker renewed it
-    templates.copy_refused(generation, events.append, cache)
-    _, generation, cache = templates.checkout(events.append)
-    templates.copy_refused(generation, events.append, cache)
-    assert templates.cache_off
-    assert [e["event"] for e in events].count("clone_cache_off") == 1
 
 
 def test_prewarm_opens_one_page_and_resolves_no_links():
@@ -1203,27 +1029,6 @@ def test_prewarm_opens_one_page_and_resolves_no_links():
     assert len(session.searched) == 1 and session.pages_turned == 0
     assert made == []
     assert (settings.pages, settings.resolve_links) == (3, True)  # restored
-
-
-def test_a_template_whose_folder_cannot_be_made_is_given_up_not_held(monkeypatch):
-    import serpmaven.scraper as module
-
-    real = tempfile.mkdtemp
-
-    def no_disk(prefix=""):
-        if prefix.startswith("gbs-template-"):
-            raise OSError("no space left on device")
-        return real(prefix=prefix)
-
-    monkeypatch.setattr(module.tempfile, "mkdtemp", no_disk)
-    events = []
-    settings = Settings(clones=2, renew_donors_every=0, gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    # The identity whose template failed is retired, so "b" runs on a second one.
-    s = scraper([[SERVED], [SERVED]], settings, events=events)
-    records = list(s.run(["a", "b"]))
-    assert [r["search_metadata"]["status"] for r in records] == ["Success", "Success"]
-    assert "template_failed" in [e["event"] for e in events]
-    assert s._templates.claim()  # released, so a later exit can try again
 
 
 def test_hl_and_gl_reach_the_browser_and_the_record():
@@ -1778,16 +1583,7 @@ def test_renewal_counts_served_queries_not_their_pages():
     assert [e["event"] for e in events].count("donor_renewed") == 1
 
 
-def test_cookie_sets_refuse_explicit_copies_and_a_negative_renewal():
-    for conflicting in (
-        dict(donors=(DONOR,), renew_donors_every=0),
-        dict(renew_donors_every=5),
-        {},  # cookie sets are renewed by default
-    ):
-        with pytest.raises(ValueError, match="clones needs renew_donors_every=0"):
-            Settings(clones=3, **conflicting)
-    assert Settings(clones=3, renew_donors_every=0).clones == 3
-    assert Settings().clones == 0
+def test_a_negative_renewal_is_refused():
     with pytest.raises(ValueError, match="renew_donors_every"):
         Settings(renew_donors_every=-1)
 

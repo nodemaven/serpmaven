@@ -198,21 +198,13 @@ def test_a_bad_output_path_stops_the_run_before_a_demo_sub_user_is_made(tmp_path
     assert made == []
 
 
-def test_copies_are_on_by_default_and_can_be_turned_off():
-    parse = cli._parser().parse_args
-    base = ["search", "q", "--no-proxy", "--renew-cookies", "0"]
-    assert parse(base).clone is None  # not given: the default applies without a warning
-    assert cli._build(parse(base), None)[0].settings.clones == 10
-    assert cli._build(parse(base + ["--clone", "0"]), None)[0].settings.clones == 0
-
-
-def test_cookie_sets_are_renewed_by_default_and_zero_brings_copies_back():
+def test_cookie_sets_are_renewed_by_default_and_zero_turns_renewal_off():
     parse = cli._parser().parse_args
     settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
-    assert settings.renew_donors_every == 5 and settings.clones == 0
+    assert settings.renew_donors_every == 5
     args = parse(["search", "q", "--no-proxy", "--renew-cookies", "0"])
     settings = cli._build(args, None)[0].settings
-    assert settings.renew_donors_every == 0 and settings.clones == 10
+    assert settings.renew_donors_every == 0
 
 
 def test_links_resolves_all_by_default_five_for_mcp_and_refuses_a_negative():
@@ -372,7 +364,6 @@ def test_a_run_starts_from_the_sets_an_earlier_run_kept_and_keeps_its_own(tmp_pa
     settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
     assert [s[0]["value"] for s in settings.donors] == ["newer", "older"]
     assert settings.donors_out == str(folder)
-    assert settings.clones == 0
 
 
 def test_a_renewal_writes_back_to_the_file_its_set_came_from(tmp_path):
@@ -499,31 +490,6 @@ def test_every_worker_of_a_run_starts_from_the_same_kept_sets():
     first = cli._settings(args, worker=0).donors
     path.write_text(json.dumps(_set("second", time.time())))
     assert cli._settings(args, worker=1).donors == first
-
-
-def test_profile_copy_flags_still_work_and_warn_once_named(capsys):
-    parse = cli._parser().parse_args
-    cli._warn_deprecated(parse(["search", "q", "--no-proxy"]))
-    assert capsys.readouterr().err == ""
-    cli._warn_deprecated(parse(["search", "q", "--no-proxy", "--clone", "5"]))
-    err = capsys.readouterr().err
-    assert err.startswith("warning: --clone is deprecated") and err.count("\n") == 1
-    args = parse(["search", "q", "--no-proxy", "--no-clone-cache", "--clone-max-age", "60"])
-    cli._warn_deprecated(args)
-    err = capsys.readouterr().err
-    assert "--clone-max-age, --no-clone-cache are deprecated" in err
-    assert cli._build(args, None)[0].settings.clone_max_age == 3600
-    cli._warn_deprecated(
-        parse(["search", "q", "--no-proxy", "--renew-cookies", "0", "--clone", "0"])
-    )
-    assert capsys.readouterr().err.startswith("warning: --clone is deprecated")
-
-
-def test_the_proxy_source_warns_about_profile_copy_flags(capsys):
-    args = cli._parser().parse_args(["search", "q", "--no-proxy", "--clone-refusals", "2"])
-    with cli._proxy_source(args):
-        pass
-    assert "--clone-refusals is deprecated" in capsys.readouterr().err
 
 
 def test_entry_flags_warn_and_still_apply(capsys):

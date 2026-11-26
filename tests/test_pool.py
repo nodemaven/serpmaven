@@ -9,7 +9,7 @@ from test_scraper import REFUSED, SERVED, FakeRelay, FakeSession
 from serpmaven.cli import main
 from serpmaven.pool import Pool, merge_stats
 from serpmaven.proxy import ProxyTemplate
-from serpmaven.scraper import Breaker, ExitsRefused, Scraper, Settings, Templates
+from serpmaven.scraper import ExitsRefused, Scraper, Settings
 
 
 class Recording(FakeSession):
@@ -157,86 +157,6 @@ def test_a_pool_still_stops_when_no_worker_is_served():
     assert len(FakeSession.opened) <= 4  # three in a row across the pool, plus one in flight
 
 
-def test_a_worker_starts_from_the_template_another_worker_left():
-    made = threading.Event()
-    events = []
-
-    def on_event(e):
-        events.append(e)
-        if e["event"] == "template":
-            made.set()
-
-    settings = Settings(
-        clones=3,
-        renew_donors_every=0,
-        max_queries_per_exit=50,
-        gap_seconds=(0, 0),
-        dwell_seconds=(0, 0),
-        settle_seconds=(0, 0),
-    )
-    # Worker 1 starts only once worker 0 has left a template.
-    p = pool(
-        [[[SERVED] * 30 for _ in range(3)], [[SERVED] * 30 for _ in range(3)]],
-        settings,
-        on_event=on_event,
-        start=lambda seconds: made.wait(5) if seconds else None,
-    )
-    records = list(p.run([f"q{i}" for i in range(12)]))
-    assert all(r["search_metadata"]["status"] == "Success" for r in records)
-    first_of_worker1 = next(s for s in FakeSession.opened if s.worker == 1)
-    assert first_of_worker1.visited == []  # a copy, not a fresh warm-up
-    assert "profile_dir" in first_of_worker1.options
-    assert [e["event"] for e in events].count("template") == 1
-    assert p.stats.clones == 1
-
-
-def test_a_scraper_leaves_a_shared_template_for_its_owner_to_drop():
-    from test_scraper import scraper
-
-    templates, breaker = Templates(3, 3600.0), Breaker(6)
-    s = scraper(
-        [[SERVED, SERVED]],
-        Settings(
-            clones=3,
-            renew_donors_every=0,
-            max_queries_per_exit=5,
-            gap_seconds=(0, 0),
-            dwell_seconds=(0, 0),
-        ),
-    )
-    s.share(breaker, templates)
-    list(s.run(["a", "b"]))
-    assert templates.present()  # another worker may still copy it
-    templates.drop("run finished", lambda e: None)
-    assert not templates.present()
-
-
-def test_a_refused_copy_drops_only_the_template_it_came_from(tmp_path):
-    dropped = []
-    templates = Templates(3, 3600.0)
-    for name in ("old", "new"):
-        (tmp_path / name).mkdir()
-    assert templates.claim()
-    templates.put(str(tmp_path / "old"))
-    templates.drop("too old", dropped.append)
-    assert templates.claim()
-    templates.put(str(tmp_path / "new"))
-    templates.drop("a copy was refused on its first query", dropped.append, generation=1)
-    assert templates.present() and len(dropped) == 1
-    templates.drop("a copy was refused on its first query", dropped.append, generation=2)
-    assert not templates.present()
-
-
-def test_only_one_worker_at_a_time_may_leave_a_template(tmp_path):
-    templates = Templates(3, 3600.0)
-    assert templates.claim()
-    assert not templates.claim() and not templates.wanted()
-    templates.abort()
-    assert templates.wanted() and templates.claim()
-    templates.put(str(tmp_path))
-    assert not templates.claim()
-
-
 def test_workers_share_one_store_of_cookie_sets():
     donor = ({"name": "NID", "value": "v", "domain": ".google.com", "path": "/"},)
     settings = Settings(gap_seconds=(0, 0), dwell_seconds=(0, 0), donors=(donor,))
@@ -250,7 +170,7 @@ def test_workers_with_different_shared_settings_are_refused():
     def make(i):
         return Scraper(
             ProxyTemplate("http://u-{session}:p@gate.example.com:7000"),
-            Settings(clones=i, renew_donors_every=0, gap_seconds=(0, 0), dwell_seconds=(0, 0)),
+            Settings(breaker=3 + i, gap_seconds=(0, 0), dwell_seconds=(0, 0)),
             session_factory=lambda proxy, **o: Recording(proxy, script=[SERVED], **o),
             relay_factory=FakeRelay,
             resolver_factory=None,

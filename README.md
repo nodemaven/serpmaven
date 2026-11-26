@@ -407,36 +407,24 @@ its memory from growing over a long hold. A browser error on a search is retried
 once on the same proxy IP before it is dropped; a network error, running out of
 memory or a crashed browser drops it at once.
 
-**Copying cookies.** Deprecated, removed in the next release: cookie sets
-(below) replace it. With `--renew-cookies 0`, the command line copies the
-cookies of the first proxy IP Google serves and starts new proxy IPs from that
-copy, on new sticky sessions, instead of warming each one; all workers share
-the copy. Google's acceptance follows the cookies more than the address, so a
-copy usually starts out served and costs a few MB instead of a full warm-up. A
-copy waits 40-60 seconds after its browser starts before the first search.
-
-**Copying the cache.** Deprecated with copies. Pages get cheaper as a proxy IP is held, because the
-browser cache fills with Google's shared scripts and images. Copies carry that
-cache too, so a new proxy IP starts with cheap pages, and the copy is refreshed
-from the held one at each browser restart, when its cache is warm. If two
-copies carrying the cache are refused on their first search, the rest of the
-run copies cookies only (`--no-clone-cache` does that from the start).
-
 **Starting from saved cookies.** `--cookies FILE` gives every new proxy IP the
 Google cookies of a browser Google already serves, so it skips the warm-up; the
-file can come from another machine. `--renew-cookies N` replaces that set with
-the cookies of a served proxy IP every N queries, so it stays fresh, and without
-`--cookies` it ends the warm-ups after the first renewal. It is on by default,
-every 5 queries, so a run warms up at most its first proxy IP and rarely another;
-`--renew-cookies 0` goes back to copies of the first served profile and keeps
-no sets. Renewed sets are kept in the config folder, readable by their owner
+file can come from another machine. `--renew-cookies N` tries every N served
+queries on a proxy IP to replace that set with that proxy IP's cookies (skipped
+when they hold no `NID`), so it stays fresh, and without `--cookies` the first
+renewal that yields Google's cookies ends the warm-ups. It is on by default,
+every 5 queries, so a run warms up at most its first proxy IP and rarely another.
+`--renew-cookies 0` turns renewal off and keeps no sets: a set given with
+`--cookies` stays in use until two proxy IPs in a row are refused on their first
+query with it, and without sets every new proxy IP warms up (unless `--warmup
+off`). Renewed sets are kept in the config folder, readable by their owner
 only, and the next run starts from those up to 24 hours old, so it skips the
 warm-up too, if it uses the same browser build (engine, channel and version):
 a set made by another build is refused more often, so after an update a run
 starts fresh. `--cookies-out DIR` keeps them in DIR instead. `--no-keep-cookies`
 neither reads nor keeps them in the config folder; a `--cookies-out DIR` given
 with it is still written, since it was asked for. If every set is refused in turn, new proxy IPs are warmed up again,
-and with `--renew-cookies` the next renewal brings the sets back. A file is a
+and with `--renew-cookies` the next successful renewal brings the sets back. A file is a
 JSON list of Playwright cookie records, or an object with that list under
 `"cookies"`, and must hold Google's `NID` cookie.
 
@@ -483,12 +471,8 @@ The defaults come from measurements in
 | `--no-autocorrect` | | Search a misspelt query as typed (`nfpr=1`) |
 | `--cr COUNTRIES`, `--lr LANGUAGES` | unset | Only documents from these countries (`countryUS`) or in these languages (`lang_en`) |
 | `--lean`, `--no-lean` | off; `mcp` on | Google's Web results only (`udm=14`): the organic links without the AI Overview, "People also ask", related searches or map places; pages about a third the size |
-| `--clone N` | 10 | Deprecated, removed in the next release. With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
-| `--clone-max-age` | 180 | Deprecated, removed in the next release. Minutes copied cookies stay in use |
-| `--clone-refusals N` | 1 | Deprecated, removed in the next release. Copies refused in a row on their first query that end the copying |
-| `--no-clone-cache` | | Deprecated, removed in the next release. Copies carry cookies only, not the browser cache |
-| `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
-| `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off, keeps no sets and brings back `--clone` |
+| `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way |
+| `--renew-cookies N` | 5 | Every N served queries, try to make a proxy IP's Google cookies the set new proxy IPs start from (skipped when they hold no `NID`); `0` turns renewal off: without `--cookies`, every new proxy IP warms up (unless `--warmup off`) |
 | `--cookies-out DIR` | | Keep renewed cookie sets in DIR instead of the config folder; the next run starts from them, or pass them to `--cookies` |
 | `--no-keep-cookies` | | Do not start from cookie sets an earlier run kept, and do not keep this run's in the config folder; a `--cookies-out DIR` given with it is still written |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |

@@ -239,13 +239,6 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         help="queries before a proxy IP is retired even if still served (default 300)",
     )
     p.add_argument(
-        "--no-clone-cache",
-        action="store_true",
-        help="deprecated, to be removed in the next release: "
-        "copies carry the cookie jar only, not the browser cache (by default they "
-        "carry both, until two copies with the cache are refused)",
-    )
-    p.add_argument(
         "--restart-every",
         type=int,
         default=50,
@@ -260,31 +253,6 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         metavar="N",
         help="proxy IPs to warm in the background while the current one serves, so a "
         "retired one is replaced without waiting (default 0; each costs a warm-up)",
-    )
-    p.add_argument(
-        "--clone",
-        type=int,
-        default=None,
-        metavar="N",
-        help="deprecated, to be removed in the next release: "
-        "with --renew-cookies 0: start up to N new proxy IPs from copies of the first "
-        "served one's cookies instead of warming each one (default 10; 0 turns it off)",
-    )
-    p.add_argument(
-        "--clone-max-age",
-        type=float,
-        default=None,
-        metavar="MIN",
-        help="deprecated, to be removed in the next release: "
-        "minutes copied cookies stay in use (default 180)",
-    )
-    p.add_argument(
-        "--clone-refusals",
-        type=int,
-        default=None,
-        metavar="N",
-        help="deprecated, to be removed in the next release: "
-        "copies refused on their first query, in a row, that end the copying (default 1)",
     )
     p.add_argument(
         "--input",
@@ -355,16 +323,19 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         help="start every new proxy IP with the Google cookies in FILE (JSON) instead of "
         "warming it up; repeat for more files, the next one taking over after two proxy "
         "IPs in a row are refused on their first query, and warm-ups again once every "
-        "file has been refused that way; turns --clone off",
+        "file has been refused that way",
     )
     p.add_argument(
         "--renew-cookies",
         type=_non_negative,
         default=RENEW_EVERY,
         metavar="N",
-        help="every N served queries on a proxy IP, its Google cookies replace the set new "
-        "proxy IPs start from, so the set stays fresh; without --cookies the first renewal "
-        f"ends the warm-ups (default {RENEW_EVERY}; 0 turns it off and brings back --clone)",
+        help="every N served queries on a proxy IP, try to make its Google cookies the set "
+        "new proxy IPs start from (skipped when they hold no NID), so the set stays fresh; "
+        "without --cookies the first renewal "
+        "that yields Google's cookies ends the warm-ups (default "
+        f"{RENEW_EVERY}; 0 turns renewal off, and without --cookies every new proxy IP "
+        "warms up unless --warmup off)",
     )
     p.add_argument(
         "--cookies-out",
@@ -440,27 +411,10 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
 
 
 #: Defaults of the flags on their way out (see `_warn_deprecated`).
-CLONE_DEFAULT, CLONE_MAX_AGE_DEFAULT, CLONE_REFUSALS_DEFAULT = 10, 180.0, 1
 INPUT_DEFAULT, DIRECT_DEFAULT = "type", "all"
 #: Flags that still work and warn: the flag, the attribute argparse gives it, and what
 #: comes instead.
 DEPRECATED_FLAGS = (
-    ("--clone", "clone", "cookie sets (--renew-cookies, on by default) replace profile copies"),
-    (
-        "--clone-max-age",
-        "clone_max_age",
-        "cookie sets (--renew-cookies, on by default) replace profile copies",
-    ),
-    (
-        "--clone-refusals",
-        "clone_refusals",
-        "cookie sets (--renew-cookies, on by default) replace profile copies",
-    ),
-    (
-        "--no-clone-cache",
-        "no_clone_cache",
-        "cookie sets (--renew-cookies, on by default) replace profile copies",
-    ),
     ("--input", "input", "results pages will always be opened directly"),
     ("--direct", "direct", "results pages will always be opened directly"),
     ("--stop-after-read", "stop_after_read", None),
@@ -477,7 +431,7 @@ def _warn_deprecated(args) -> None:
     given = [
         (flag, instead)
         for flag, name, instead in DEPRECATED_FLAGS
-        # Identity, not equality: --clone 0 is given, and 0 == False.
+        # Identity, not equality: a value of 0 was given, and 0 == False.
         if (value := getattr(args, name, None)) is not None and value is not False
     ]
     if not given:
@@ -653,12 +607,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         pages=pages,
         max_queries_per_exit=args.max_per_exit,
         restart_every=args.restart_every,
-        clone_cache=not args.no_clone_cache,
         spare=args.spare,
-        # Cookie sets replace the copies of a served profile.
-        clones=0 if args.cookies or args.renew_cookies else _or(args.clone, CLONE_DEFAULT),
-        clone_max_age=_or(args.clone_max_age, CLONE_MAX_AGE_DEFAULT) * 60,
-        clone_refusals=_or(args.clone_refusals, CLONE_REFUSALS_DEFAULT),
         input=_or(args.input, INPUT_DEFAULT),
         direct=_or(args.direct, DIRECT_DEFAULT),
         stop_after_read=args.stop_after_read,
