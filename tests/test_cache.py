@@ -167,6 +167,8 @@ def test_the_estimate_scales_with_pages_and_workers():
     # one query of 100 pages runs on one worker, however many there are
     assert cli._estimate(1, 100, 10, None) == cli._estimate(1, 100, 1, None)
     assert "$0.00-0.00 at $0/GB" in cli._estimate(10, 1, 1, 0)
+    # starting from a cookie set, the low end skips the warm-up
+    assert "roughly 500-1560 MB" in cli._estimate(1000, 1, 1, None, has_sets=True)
 
 
 def test_blank_lines_are_not_in_the_estimate(tmp_path, monkeypatch, capsys):

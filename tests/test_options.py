@@ -62,6 +62,7 @@ SAMPLES = {
     "--cookies": Sample(COOKIES, "donors"),
     "--renew-cookies": Sample("7", "renew_donors_every"),
     "--cookies-out": Sample("sets", "donors_out"),
+    "--no-keep-cookies": Sample(field="donors_out"),
     # Queries and pages.
     "--input": Sample("insert", "input"),
     "--direct": Sample("none", "direct"),
@@ -77,6 +78,7 @@ SAMPLES = {
     "--no-autocorrect": Sample(field="autocorrect"),
     "--cr": Sample("countryUS", "cr"),
     "--lr": Sample("lang_en", "lr"),
+    "--lean": Sample(field="lean"),
     "--save-html": Sample("pages", "save_html"),
     "--no-resolve-links": Sample(field="resolve_links"),
     "--links": Sample("3", "links"),
@@ -99,9 +101,14 @@ SAMPLES = {
     "--prewarm": Sample(),
 }
 
+#: On/off options a command has on by default: the sample there turns them off.
+ON_BY_DEFAULT = {("mcp", "--lean"): "--no-lean"}
+
 #: Fields of `Settings` no option above sets, and where they come from.
 NOT_FROM_AN_OPTION = {
     "pages": "search passes --pages itself; serve and mcp take it from each request",
+    "donor_files": "the file names of the kept sets, read with them",
+    "donor_build": "the browser build, from --engine and --channel",
     "max_exits_per_query": "library only",
     "breaker": "library only",
     "dwell_seconds": "library only",
@@ -198,7 +205,8 @@ def test_every_sample_changes_what_the_command_runs_with(tmp_path, monkeypatch):
         sample = SAMPLES[option]
         base = [command, *sample.beside]
         before = parse(base)
-        after = parse([*base, option if sample.value is None else f"{option}={sample.value}"])
+        given = ON_BY_DEFAULT.get((command, option), option)
+        after = parse([*base, given if sample.value is None else f"{given}={sample.value}"])
         if sample.field is None:
             changed = getattr(before, action.dest) != getattr(after, action.dest)
         else:

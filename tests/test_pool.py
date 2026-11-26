@@ -181,6 +181,23 @@ def test_workers_with_different_shared_settings_are_refused():
         list(Pool(make, 2, sleep=lambda seconds: None).run(["a"]))
 
 
+def test_workers_with_different_browser_builds_are_refused():
+    def make(i):
+        return Scraper(
+            ProxyTemplate("http://u-{session}:p@gate.example.com:7000"),
+            Settings(
+                donor_build=f"patchright/bundled/{i}", gap_seconds=(0, 0), dwell_seconds=(0, 0)
+            ),
+            session_factory=lambda proxy, **o: Recording(proxy, script=[SERVED], **o),
+            relay_factory=FakeRelay,
+            resolver_factory=None,
+            sleep=lambda seconds: None,
+        )
+
+    with pytest.raises(ValueError, match="donor_build must be the same for every worker"):
+        list(Pool(make, 2, sleep=lambda seconds: None).run(["a"]))
+
+
 def test_merged_stats_carry_the_hybrid_counters():
     from serpmaven.pool import merge_stats
     from serpmaven.scraper import Stats

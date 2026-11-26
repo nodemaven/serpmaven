@@ -1,5 +1,6 @@
 """The identity lifecycle, with a fake browser and no clock."""
 
+import json
 import os
 import tempfile
 
@@ -1101,6 +1102,14 @@ def test_unpersonalized_uncorrected_country_and_language_reach_the_url_and_the_r
     assert url.endswith("&hl=en&pws=0&nfpr=1")
 
 
+def test_lean_asks_the_web_results_page_everywhere_and_says_so_in_the_record():
+    settings = Settings(lean=True, gap_seconds=(0, 0), dwell_seconds=(0, 0))
+    records = list(scraper([[SERVED]], settings).run(["a"]))
+    assert FakeSession.opened[0].options["params"] == {"udm": "14"}
+    assert records[0]["search_parameters"]["udm"] == "14"
+    assert results_url("pizza", extra=url_params(lean=True)).endswith("&hl=en&udm=14")
+
+
 def test_an_exit_serving_pages_unrelated_to_their_queries_is_retired_as_poisoned():
     # The fixture's titles are about swimming; three multi-word queries about
     # something else in a row look like the "poisoned" pages Google is
@@ -1506,13 +1515,14 @@ def test_refusals_of_exits_from_a_replaced_set_do_not_count_against_the_new_one(
     s0, s1, fresh = (({"name": "NID", "value": v, "domain": ".google.com"},) for v in "01f")
     d = Donors((s0, s1), slots=2)
     assert d.current() == (0, 0, s0)  # an exit starts from slot 0, generation 0
-    d.renew(fresh, "exit9", lambda e: None)  # slot 0 now holds a new set
-    d.refused(0, 0, lambda e: None)
-    d.refused(0, 0, lambda e: None)
-    assert d.current() == (0, 1, fresh)
-    d.refused(0, 1, lambda e: None)
-    d.refused(0, 1, lambda e: None)
-    assert d.current() == (1, 0, s1)
+    # Sets given up front count as newest first: the renewal replaces slot 1.
+    d.renew(fresh, "exit9", lambda e: None)
+    d.refused(1, 0, lambda e: None)
+    d.refused(1, 0, lambda e: None)
+    assert d.current() == (1, 1, fresh)  # refusals of the old set in slot 1 do not count
+    d.refused(1, 1, lambda e: None)
+    d.refused(1, 1, lambda e: None)
+    assert d.current() == (0, 0, s0)
 
 
 def test_a_set_that_cannot_be_written_is_still_used(tmp_path):
@@ -1532,8 +1542,10 @@ def test_a_written_set_is_readable_by_its_owner_only(tmp_path):
     from serpmaven.scraper import Donors
 
     # Files left at the paths, readable by anyone, do not pass their mode on.
+    # (A stale set: a new slot writes over that one, not over a broken file.)
+    stale = json.dumps({"t": 0, "cookies": []})
     for name in ("donor_0.json", "donor_0.json.tmp"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
+        (tmp_path / name).write_text(stale, encoding="utf-8")
         (tmp_path / name).chmod(0o644)
     Donors((), out=str(tmp_path)).renew(DONOR, "exit0", lambda e: None)
     assert (tmp_path / "donor_0.json").stat().st_mode & 0o777 == 0o600

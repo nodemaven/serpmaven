@@ -97,16 +97,23 @@ class Pool:
                 raise ValueError(
                     "workers share one breaker, so breaker must be the same for every worker"
                 )
-            if (s.donors, s.donors_out) != (first.donors, first.donors_out):
+            if (s.donors, s.donors_out, s.donor_files, s.donor_build) != (
+                first.donors,
+                first.donors_out,
+                first.donor_files,
+                first.donor_build,
+            ):
                 raise ValueError(
-                    "workers share one store of cookie sets, so donors and donors_out "
-                    "must be the same for every worker"
+                    "workers share one store of cookie sets, so donors, donors_out, "
+                    "donor_files and donor_build must be the same for every worker"
                 )
         breaker = Breaker(first.breaker)
         headers = Headers()
         # One store of cookie sets: a refusal or a renewal on any worker moves
         # the set every worker starts its next exit from.
-        donors = Donors(first.donors, first.donors_out)
+        donors = Donors(
+            first.donors, first.donors_out, files=first.donor_files, build=first.donor_build
+        )
         for scraper in self._scrapers:
             scraper.share(breaker, headers, donors)
         threads = [
