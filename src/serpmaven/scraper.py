@@ -15,15 +15,10 @@ warm-up.
 
 from __future__ import annotations
 
-import contextlib
-import copy
 import functools
 import gzip
-import json
-import os
 import random
 import re
-import tempfile
 import threading
 import time
 from collections import deque
@@ -37,10 +32,15 @@ from typing import Any
 from . import browser, engines, quality
 from . import warmup as ladder
 from .classify import Verdict, classify
+
+# Split out of this module; imported here so `serpmaven.scraper` keeps them.
+from .donors import DONOR_REFUSALS, DONOR_SLOTS, KEEP_HOURS, RENEW_EVERY, Donors  # noqa: F401
+from .errors import _CREDENTIALS, describe_error  # noqa: F401
 from .hybrid import Headers, HybridSession
 from .links import LinkResolver
 from .output import build_record
 from .parse import parse_serp
+from .pending import PendingLinks, _fill_links, _unresolved  # noqa: F401
 from .proxy import ProxySource, new_session_id
 from .relay import Relay
 
@@ -61,41 +61,12 @@ LINK_WORKERS = 4
 PREWARM_QUERIES = ("weather", "news", "translate", "time", "maps")
 
 
-_CREDENTIALS = re.compile(r"//[^/\s:@]+:[^@\s]+@")
 #: Chromium's own network failures: the tunnel, TLS or the connection broke.
 _NETWORK_ERROR = re.compile(r"net::ERR_")
 
 #: A browser that crashed or was closed under the search: a second search on it
 #: fails the same way or hangs.
 _BROWSER_GONE = re.compile(r"crashed|has been closed", re.IGNORECASE)
-
-
-def describe_error(exc: BaseException) -> str:
-    """One line naming an exception, for records and events.
-
-    Browser errors can be long and can quote the proxy URL they were given, so
-    only the first line is kept, it is truncated, and `user:pass@` is masked.
-    """
-    lines = str(exc).strip().splitlines()
-    first = _CREDENTIALS.sub("//***@", lines[0] if lines else "")[:200]
-    return f"{type(exc).__name__}: {first}" if first else type(exc).__name__
-
-
-#: Exits started from one cookie set and refused on their first query, in a
-#: row, before the next set is used. A set refused once can be served again on
-#: the next exit; two in a row usually means it is out of favour for a while.
-DONOR_REFUSALS = 2
-#: Cookie sets renewal keeps, each from a different served exit, so a refused
-#: set has fresh ones to hand over to instead of one set overwritten in place.
-DONOR_SLOTS = 4
-#: How old a cookie set an earlier run saved may be and still start a run.
-#: A set kept 24 hours on the same machine was served as often as a fresh one.
-KEEP_HOURS = 24
-#: Served queries on an exit between renewals of the cookie set, by default.
-#: An exit started from a set gets results as good as one warmed up from scratch,
-#: at a fraction of the traffic, so the first set is taken early: a short session,
-#: such as an agent's, rarely reaches a large number before an exit is refused.
-RENEW_EVERY = 5
 
 
 class ExitsRefused(RuntimeError):
@@ -276,183 +247,6 @@ def filter_params(s: Settings) -> dict[str, str]:
     return shown
 
 
-class Donors:
-    """The cookie sets new exits start from, used one at a time, moving on to
-    the next after DONOR_REFUSALS first queries refused in a row. Once every
-    set has been refused that way with nothing served in between, there is no
-    set in use and new exits warm up again, until a served exit renews a set
-    or a set is served. One instance serves every worker of a run (see `Pool`).
-
-    Each slot carries a generation, bumped when a renewal replaces its set, so
-    an exit started from the set a slot held before does not count against
-    the set it holds now."""
-
-    def __init__(
-        self,
-        sets: tuple[tuple[dict, ...], ...],
-        out: str | None = None,
-        slots: int = DONOR_SLOTS,
-        files: tuple[str, ...] = (),
-        build: str | None = None,
-    ) -> None:
-        self.sets = list(sets)
-        self.out = out
-        self.build = build
-        self.slots = max(slots, 1)
-        #: The file in `out` each slot writes to; see `Settings.donor_files`.
-        self._files = list(files)[: len(self.sets)]
-        self._generation = [0] * len(self.sets)
-        #: The exit each slot was last renewed from; None for a set given up front.
-        self._source: list[str | None] = [None] * len(self.sets)
-        #: When each slot was last renewed, in renewals; the least recent one is
-        #: overwritten once all slots are filled. Sets given up front come newest
-        #: first, so they start ranked that way.
-        self._renewed = list(range(len(self.sets), 0, -1))
-        self._clock = len(self.sets)
-        self._at = 0
-        self._refused = 0
-        #: Sets refused DONOR_REFUSALS times in a row since a set was last
-        #: served or renewed; at len(sets) there is no set in use.
-        self._spent = 0
-        self._lock = threading.Lock()
-
-    def current(self) -> tuple[int, int, tuple[dict, ...]] | None:
-        """The slot in use, its generation and its set; None without sets or
-        once every set has been refused."""
-        with self._lock:
-            if not self.sets or self._spent >= len(self.sets):
-                return None
-            return self._at, self._generation[self._at], self.sets[self._at]
-
-    def served(self, index: int, generation: int) -> None:
-        with self._lock:
-            if (index, generation) == (self._at, self._generation[index]):
-                self._refused = 0
-                self._spent = 0
-
-    def refused(self, index: int, generation: int, emit: Callable[[dict], None]) -> str:
-        """Count a first query refused on a set: "stale" for an exit from a set
-        already left behind or replaced, which is not counted; "spent" when
-        this leaves no set in use, so new exits warm up again; else "counted"."""
-        with self._lock:
-            if self._spent >= len(self.sets):
-                return "stale"  # already out of sets
-            if (index, generation) != (self._at, self._generation[index]):
-                return "stale"
-            self._refused += 1
-            if self._refused < DONOR_REFUSALS:
-                return "counted"
-            self._refused = 0
-            self._spent += 1
-            if self._spent >= len(self.sets):
-                emit(
-                    {
-                        "event": "donors_spent",
-                        "sets": len(self.sets),
-                        "after_refusals": DONOR_REFUSALS,
-                    }
-                )
-                return "spent"
-            self._at = (self._at + 1) % len(self.sets)
-            emit({"event": "donor_switched", "to": self._at, "after_refusals": DONOR_REFUSALS})
-            return "counted"
-
-    def renew(self, cookies: tuple[dict, ...], source: str, emit: Callable[[dict], None]) -> None:
-        """Take fresher cookies from a served exit as the set in use. An exit
-        renewing again replaces its own set; otherwise they go into a free
-        slot, or over the oldest set once `slots` are filled. A refused set
-        then hands over to the next slot, a recent set from another exit."""
-        if not any(c.get("name") == "NID" and c.get("value") for c in cookies):
-            # Not a set Google's trust rides on, and `load_cookies` would
-            # refuse it as written out for the next run.
-            return
-        with self._lock:
-            if source in self._source:
-                at = self._source.index(source)
-                self.sets[at] = cookies
-            elif len(self.sets) < self.slots:
-                self.sets.append(cookies)
-                self._generation.append(0)
-                self._source.append(None)
-                self._renewed.append(0)
-                at = len(self.sets) - 1
-            else:
-                at = min(range(len(self.sets)), key=self._renewed.__getitem__)
-                self.sets[at] = cookies
-            self._clock += 1
-            self._renewed[at] = self._clock
-            self._generation[at] += 1
-            self._source[at] = source
-            self._at = at
-            self._refused = 0
-            self._spent = 0
-            # Written under the lock: workers renewing at once would otherwise
-            # race on the slot's file.
-            error = self._write(at, cookies) if self.out else None
-        emit({"event": "donor_renewed", "set": at, "cookies": len(cookies)})
-        if error:
-            emit({"event": "donor_write_failed", "set": at, "error": error})
-
-    def _free_name(self) -> str:
-        """A `donor_<n>.json` name for a new slot. Not one of this run's, and
-        not a file in `out` that may still be worth something - a set of
-        another browser build, a broken or unreadable file: only a set older
-        than KEEP_HOURS is written over."""
-        taken = set(self._files)
-        now = time.time()
-        n = 0
-        while True:
-            name = f"donor_{n}.json"
-            n += 1
-            if name in taken:
-                continue
-            path = os.path.join(self.out, name)
-            if not os.path.exists(path):
-                return name
-            if not os.path.isfile(path):
-                continue  # a FIFO or device: opening it could block
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    written = json.load(fh).get("t")
-                if (
-                    isinstance(written, (int, float))
-                    and not isinstance(written, bool)
-                    and 0 <= now - written
-                    and now - written > KEEP_HOURS * 3600
-                ):
-                    return name  # stale: nothing reads it any more
-            except (OSError, ValueError, AttributeError, OverflowError):
-                pass  # unreadable or broken: left for a person to look at
-
-    def _write(self, at: int, cookies: tuple[dict, ...]) -> str | None:
-        """Write a set for the next run's `donors`, readable by its owner only;
-        the error, if the write failed - the set in memory is still used."""
-        assert self.out is not None
-        while len(self._files) <= at:
-            self._files.append(self._free_name())
-        path = os.path.join(self.out, self._files[at])
-        tmp = None
-        try:
-            os.makedirs(self.out, exist_ok=True)
-            # A new file of its own, created owner-only, then moved into place:
-            # whatever sat at the path before, the result is owner-only.
-            fd, tmp = tempfile.mkstemp(prefix=f".donor_{at}.", suffix=".tmp", dir=self.out)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                record = {"t": time.time(), "cookies": list(cookies)}
-                if self.build is not None:
-                    record["browser"] = self.build
-                json.dump(record, fh)
-            os.replace(tmp, path)
-            tmp = None
-        except OSError as exc:
-            return describe_error(exc)
-        finally:
-            if tmp is not None:
-                with contextlib.suppress(OSError):
-                    os.remove(tmp)
-        return None
-
-
 class Breaker:
     """Exits refused or unreachable in a row, across every worker sharing it.
 
@@ -596,98 +390,6 @@ class Stats:
                 top = sorted(by_host.items(), key=lambda item: -item[1])[:TOP_HOSTS]
                 out["traffic_by_host_mb"] = {host: round(n / MB, 2) for host, n in top}
         return out
-
-
-def _fill_links(
-    resolver,
-    record: dict[str, Any],
-    page: str = "",
-    client=None,
-    limit: int | None = None,
-    failed: Callable[..., None] | None = None,
-) -> None:
-    """A record's links: on the exit its page came from, through each result's
-    ping URL, then from the resolver's own exit for whatever is left. With
-    `limit`, only the first that many organic results are asked. A step that
-    raises is reported to `failed(step=, error=)`; the links it did not reach
-    stay unresolved."""
-    mark = time.monotonic()
-    results = record.get("organic_results") or []
-    if limit is not None:
-        results = results[:limit]
-
-    def report(step: str, exc: Exception) -> None:
-        if failed is not None:
-            failed(step=step, error=describe_error(exc))
-
-    if client is not None:
-        try:
-            resolver.fill_from_pings(results, page, client.get)
-        except Exception as exc:  # whatever is left goes to the /goto resolver below
-            report("pings", exc)
-        finally:
-            client.close()
-    try:
-        resolver.fill(results)
-    except Exception as exc:
-        report("goto", exc)
-    with getattr(resolver, "lock", None) or contextlib.nullcontext():
-        timings = record["search_metadata"].setdefault("timings", {})
-        timings["links"] = round(time.monotonic() - mark, 2)
-
-
-class PendingLinks:
-    """A query's records, read, while their links go on resolving on the link
-    threads.
-
-    `wait()` blocks until every link is in or a deadline passes; `snapshot()`
-    is the records as they stand, safe to serialize while links are still
-    being written into them: a copy, made under the resolver's lock, with
-    `search_metadata.links_pending` on each record whose links are not all in.
-    `limit` is the number of organic results whose links were asked (None: all).
-    """
-
-    def __init__(
-        self,
-        records: list[dict[str, Any]],
-        jobs: dict[int, Future] | None = None,
-        lock: Any = None,
-        limit: int | None = None,
-    ) -> None:
-        self.records = records
-        #: Index into `records` -> the job filling that record's links.
-        self._jobs = jobs or {}
-        self.lock = lock or threading.Lock()
-        self.limit = limit
-
-    def done(self) -> bool:
-        return all(job.done() for job in self._jobs.values())
-
-    def wait(self, timeout: float | None = None) -> bool:
-        """True once every link is in, False if `timeout` seconds passed first."""
-        if not self._jobs:
-            return True
-        finished, _ = wait_futures(list(self._jobs.values()), timeout=timeout)
-        return len(finished) == len(self._jobs)
-
-    def snapshot(self) -> list[dict[str, Any]]:
-        if self.done():
-            return self.records
-        with self.lock:
-            out = copy.deepcopy(self.records)
-            for index, job in self._jobs.items():
-                if not job.done():
-                    pending = _unresolved(out[index], self.limit)
-                    out[index]["search_metadata"]["links_pending"] = pending
-        return out
-
-
-def _unresolved(record: dict[str, Any], limit: int | None = None) -> int:
-    """Results among the first `limit` (all with None) still waiting for a link."""
-    results = (record.get("organic_results") or [])[:limit]
-    return sum(
-        1 for r in results if r.get("link") is None and "/goto?" in (r.get("redirect_link") or "")
-    )
 
 
 def _by_size(hosts: dict[str, int]) -> dict[str, int]:
@@ -1013,7 +715,7 @@ class Scraper:
 
     # -- one query -----------------------------------------------------------
 
-    def _query(  # noqa: C901
+    def _query(
         self, query: str, more: bool = True, settle: bool = True
     ) -> Iterator[dict[str, Any]]:
         s = self.settings
@@ -1024,13 +726,7 @@ class Scraper:
             if identity is None:
                 last_error = "exit unreachable: no warm-up page arrived"
                 continue
-            if identity.queries:
-                # The gap is time since the last page, not a wait added to it:
-                # a server whose callers pause on their own has waited already.
-                idle = time.monotonic() - identity.last_page_at
-                rest = self._rng.uniform(*s.gap_seconds) - idle
-                if rest > 0:
-                    self._sleep(rest)
+            self._rest_before(identity)
             started, before = time.monotonic(), identity.open_window()
             try:
                 fetched = self._search(identity, query)
@@ -1048,59 +744,16 @@ class Scraper:
             if verdict.served:
                 record = self._served(query, 1, fetched, verdict, identity, started, before, saved)
                 if self._poisoned(identity, query, record):
-                    # Results for other queries than the one asked: Google's
-                    # answer to some automated traffic. Not a page to return.
-                    self._finish(record)
-                    self.stats.pages_served -= 1
-                    if record["search_metadata"]["fetched_with"] == "http":
-                        self.stats.pages_http -= 1
-                    self.stats.exits_poisoned += 1
+                    self._drop_poisoned(record)
                     last_verdict, last_error = None, "results unrelated to the query"
-                    self._retire("poisoned")
-                    self._count_failure()
                     continue
-                self._breaker.served()
-                if identity.donor is not None and identity.queries == 1:
-                    self._donors.served(identity.donor, identity.donor_generation)
-                identity.served_queries += 1
-                every = s.renew_donors_every
-                if every and identity.served_queries % every == 0:
-                    self._renew_donor(identity)
-                if more:
-                    self._top_up()
+                self._count_served(identity, more)
                 yield record
                 yield from self._more_pages(query, identity)
-                if self._donors.current() is not None and getattr(
-                    identity.session, "http_off", False
-                ):
-                    # Every further page here would come from the browser, at
-                    # several times the traffic; a new exit from a cookie set
-                    # costs next to nothing and gets the HTTP side back.
-                    self._retire("http side off")
-                    return
-                if settle:
-                    self._upkeep(identity, more)
-                else:
-                    self._unsettled = (identity, more)
+                self._after_query(identity, more, settle)
                 return
-            donor = None
-            if identity.donor is not None and identity.queries == 1 and verdict.refused:
-                donor = self._donors.refused(identity.donor, identity.donor_generation, self._emit)
             last_verdict, last_error = verdict, None
-            self.stats.exits_refused += verdict.refused
-            self._retire(verdict.kind)
-            if donor == "spent":
-                # Every cookie set refused: new exits warm up again, and the
-                # breaker counts the warm-ups from zero.
-                self._breaker.reset()
-            elif donor is None:
-                # An exit from a cookie set costs next to nothing, and the
-                # sets' own limit (DONOR_REFUSALS each) bounds how many are
-                # tried, as do the workers for exits already started from a
-                # set another worker has since left ("stale"); counting them
-                # too would trip the breaker before every set had been tried
-                # and the warm-ups reached.
-                self._count_failure()
+            self._drop_refused(identity, verdict)
         self.stats.queries_failed += 1
         reason = last_verdict.reason if last_verdict else "unknown"
         yield build_record(
@@ -1115,6 +768,74 @@ class Scraper:
             exit_info={"session": None},
             error=last_error or f"refused on {s.max_exits_per_query} exits: {reason}",
         )
+
+    def _rest_before(self, identity: Identity) -> None:
+        """Wait out the gap between pages on a held exit. The gap is time since
+        the last page, not a wait added to it: a server whose callers pause on
+        their own has waited already."""
+        if not identity.queries:
+            return
+        idle = time.monotonic() - identity.last_page_at
+        rest = self._rng.uniform(*self.settings.gap_seconds) - idle
+        if rest > 0:
+            self._sleep(rest)
+
+    def _drop_poisoned(self, record: dict[str, Any]) -> None:
+        """Results for other queries than the one asked: Google's answer to some
+        automated traffic. The page is not returned and the exit is retired."""
+        self._finish(record)
+        self.stats.pages_served -= 1
+        if record["search_metadata"]["fetched_with"] == "http":
+            self.stats.pages_http -= 1
+        self.stats.exits_poisoned += 1
+        self._retire("poisoned")
+        self._count_failure()
+
+    def _count_served(self, identity: Identity, more: bool) -> None:
+        """A query's first page was served on `identity`."""
+        self._breaker.served()
+        if identity.donor is not None and identity.queries == 1:
+            self._donors.served(identity.donor, identity.donor_generation)
+        identity.served_queries += 1
+        every = self.settings.renew_donors_every
+        if every and identity.served_queries % every == 0:
+            self._renew_donor(identity)
+        if more:
+            self._top_up()
+
+    def _after_query(self, identity: Identity, more: bool, settle: bool) -> None:
+        """What a served query leaves: the exit retired when its HTTP side gave
+        up, or the upkeep, now or when the caller settles."""
+        if self._donors.current() is not None and getattr(identity.session, "http_off", False):
+            # Every further page here would come from the browser, at several
+            # times the traffic; a new exit from a cookie set costs next to
+            # nothing and gets the HTTP side back.
+            self._retire("http side off")
+            return
+        if settle:
+            self._upkeep(identity, more)
+        else:
+            self._unsettled = (identity, more)
+
+    def _drop_refused(self, identity: Identity, verdict: Verdict) -> None:
+        """Google refused `identity` (or it answered with no page): retire it and
+        count the refusal against its cookie set or the breaker."""
+        donor = None
+        if identity.donor is not None and identity.queries == 1 and verdict.refused:
+            donor = self._donors.refused(identity.donor, identity.donor_generation, self._emit)
+        self.stats.exits_refused += verdict.refused
+        self._retire(verdict.kind)
+        if donor == "spent":
+            # Every cookie set refused: new exits warm up again, and the
+            # breaker counts the warm-ups from zero.
+            self._breaker.reset()
+        elif donor is None:
+            # An exit from a cookie set costs next to nothing, and the sets'
+            # own limit (DONOR_REFUSALS each) bounds how many are tried, as do
+            # the workers for exits already started from a set another worker
+            # has since left ("stale"); counting them too would trip the
+            # breaker before every set had been tried and the warm-ups reached.
+            self._count_failure()
 
     def _search(self, identity: Identity, query: str):
         """Search on this identity, once more from Google's front page if the
