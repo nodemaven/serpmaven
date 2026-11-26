@@ -234,7 +234,7 @@ serpmaven search -f queries.txt --nodemaven-demo --traffic-limit-mb 300 -o resul
 <br>
 
 ```bash
-serpmaven search "best running shoes" --no-proxy
+serpmaven search "best running shoes" --no-proxy --output data.json
 ```
 
 Google then sees one address for every query, so it starts answering with
@@ -286,10 +286,13 @@ switch with minimal mapping.
 - `search_metadata.fetched_with`: `http` or `browser`
 - `search_metadata.timings`: seconds per step (`http` for a page fetched over HTTP; `type`, `load`, `ready` and `read` for one the browser rendered; `parse`; `links`, which overlaps the next query)
 - A query that failed is a record too, with an `error`
+- `search_metadata.cached`: `true` on a record answered from `--cache-ttl`
 
 Knowledge panels, shopping, images and other special blocks are not parsed.
 `--format csv` writes the organic results as a table, and `--price-per-gb` adds
-the cost per 1000 pages to the summary.
+the cost per 1000 pages to the summary. Before a run starts, `search` prints a
+rough estimate of its proxy traffic and time (and cost, with `--price-per-gb`)
+for the queries it still has to ask; `-v` leaves it out.
 
 </details>
 
@@ -432,9 +435,9 @@ Each one is resolved with a small request on the proxy IP the page came from,
 with that page's cookies, in the background while the next query runs; a link
 left over is tried through a separate short-lived proxy session. Google answers
 only a few links of a page at once and holds the rest on a "Verifying your
-request" page; a link held for up to 30 seconds is asked again when the wait is
-over, twice at most and within 45 seconds a page, so a page's links can take up
-to 45 seconds while the queries carry on.
+request" page; a link held for up to 60 seconds is asked again when the wait is
+over, twice at most and within 75 seconds after the page's first lookups (up to
+30 seconds), so a page's links can take a minute or two while the queries carry on.
 Records still come out in the order each browser searched them.
 
 **Traffic.** Everything goes through a small local relay that counts bytes per
@@ -462,28 +465,31 @@ The defaults come from measurements in
 | `--max-per-exit N` | 300 | Queries before a served proxy IP is retired |
 | `--restart-every N` | 50 | Results pages the browser rendered before it restarts on the same profile and proxy IP; `0` never |
 | `--no-hybrid` | | Fetch every results page in the browser instead of over HTTP between Google's checks |
+| `--cut-http-pages` | | Experimental: stop reading a results page that comes over HTTP at Google's footer, so the scripts after it are not downloaded |
 | `--hl`, `--gl` | `en`, unset | Language and country of the results |
 | `--location PLACE` | unset | Search as from this place, by its canonical name: `"Austin,Texas,United States"` |
 | `--tbs FILTER` | unset | Google's `tbs` filter as it is, e.g. `qdr:w` for the past week |
 | `--no-personalization` | | Results without personalization (`pws=0`) |
 | `--no-autocorrect` | | Search a misspelt query as typed (`nfpr=1`) |
 | `--cr COUNTRIES`, `--lr LANGUAGES` | unset | Only documents from these countries (`countryUS`) or in these languages (`lang_en`) |
-| `--clone N` | 10 | With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
-| `--clone-max-age` | 180 | Minutes copied cookies stay in use |
-| `--clone-refusals N` | 1 | Copies refused in a row on their first query that end the copying |
-| `--no-clone-cache` | | Copies carry cookies only, not the browser cache |
+| `--clone N` | 10 | Deprecated, removed in the next release. With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
+| `--clone-max-age` | 180 | Deprecated, removed in the next release. Minutes copied cookies stay in use |
+| `--clone-refusals N` | 1 | Deprecated, removed in the next release. Copies refused in a row on their first query that end the copying |
+| `--no-clone-cache` | | Deprecated, removed in the next release. Copies carry cookies only, not the browser cache |
 | `--cookies FILE` | | Start every new proxy IP from the Google cookies in FILE instead of a warm-up; repeat for more files, the next one taking over after two proxy IPs in a row are refused on their first query, and warm-ups again once every file has been refused that way. Turns `--clone` off |
 | `--renew-cookies N` | 5 | Every N served queries, a proxy IP's Google cookies become the set new proxy IPs start from; `0` turns it off and brings back `--clone` |
 | `--cookies-out DIR` | | Write each renewed cookie set to DIR, for the next run's `--cookies` |
 | `--warmup` | `L3` | Pages a fresh proxy IP opens before its first query: `L3`, `light` (without Google Trends: much less traffic, served on the first query less often), `L2`, `L1`, `off` |
 | `--spare N` | 0 | Proxy IPs warmed in the background so a retired one is replaced at once; each costs a warm-up |
-| `--direct` | `all` | Open results pages directly: `all`, `follow-ups` (all but the first query on each proxy IP), `none` |
-| `--input` | `type` | How a query goes into the search box: `type`, `insert`, `words` |
+| `--direct` | `all` | Deprecated, removed in the next release. Open results pages directly: `all`, `follow-ups` (all but the first query on each proxy IP), `none` |
+| `--input` | `type` | Deprecated, removed in the next release. How a query goes into the search box: `type`, `insert`, `words` |
 | `--gap LOW,HIGH` | 2,5 | Seconds between queries on one proxy IP |
 | `--pages N` | 1 | Result pages per query |
 | `--format` | from `-o`, else `jsonl` | `jsonl`, `json` or `csv`; `-o results.csv` picks `csv` by itself |
 | `--patient MINUTES` | `0` (stop) | When Google refuses proxy IPs until the run stops, wait and go on with the queries left, up to 3 times; a query cut short is asked again from its first page, so its earlier pages appear twice in the output |
 | `--price-per-gb` | | Your proxy price, to print the cost per 1000 pages |
+| `--cache-ttl MINUTES` | `0` (off) | Answer a query from an earlier run's results if they are at most this old, without the browser or the proxy |
+| `--cache-dir DIR` | | Where `--cache-ttl` keeps results (default: a `cache` folder beside the saved login) |
 | `--no-resolve-links` | | Keep result links as Google `/goto` redirects |
 | `--links N` | all; `mcp` 5 | Resolve the links of the first N organic results on each page only; the rest keep their `/goto` redirect. Fewer answers sooner |
 | `--save-html DIR` | | Keep every page's HTML, gzipped |
@@ -492,7 +498,7 @@ The defaults come from measurements in
 | `--browser-arg=ARG` | | Extra Chromium switch, e.g. `--browser-arg=--disable-gpu`; repeat for more, or set `SERPMAVEN_BROWSER_ARGS` |
 | `--headless` | | Run the browser without a window; `serpmaven doctor --headless` shows what a website sees then |
 | `--no-relay` | | Hand the proxy to the browser directly: traffic is not counted, and every results page is fetched in the browser |
-| `--stop-after-read` | | Experimental: leave each query's last results page once it is read |
+| `--stop-after-read` | | Deprecated, removed in the next release. Experimental: leave each query's last results page once it is read |
 | `-v`, `--verbose` | | Print every step as a JSON line on stderr instead of the progress line, after one plain `proxy: ...` line; the run ends with `summary: {...}` |
 
 </details>
