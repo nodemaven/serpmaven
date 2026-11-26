@@ -47,7 +47,6 @@ from .relay import Relay
 MB = 1024 * 1024
 MAX_SPARES = 3
 TOP_HOSTS = 10
-DIRECT_MODES = ("all", "follow-ups", "none")
 #: Records held back while their links resolve in the background; past this
 #: the run waits for the oldest instead of opening more pages ahead of it.
 #: Google holds some links for up to half a minute, so a page's links can take
@@ -144,16 +143,6 @@ class Settings:
     #: so the next exit is ready when this one is retired. Each costs a
     #: warm-up's traffic whether it is used or not.
     spare: int = 0
-    #: How a query is entered into Google's search box: "type" key by key,
-    #: "insert" all at once, "words" one word at a time.
-    input: str = "type"
-    #: Which queries open the results page directly instead of going through
-    #: the box: "all", "follow-ups" (all but an exit's first) or "none".
-    direct: str = "all"
-    #: Leave each query's last results page for about:blank once it is read,
-    #: so the scripts and requests Google starts after the page has loaded
-    #: stop with it. They are most of a page's traffic.
-    stop_after_read: bool = False
     #: Wait between relaunching a warmed profile and its first search: a
     #: search the moment the browser starts is refused far more often.
     settle_seconds: tuple[float, float] = (40.0, 60.0)
@@ -214,10 +203,6 @@ class Settings:
             raise ValueError("links must be 0 or more")
         if self.renew_donors_every < 0:
             raise ValueError("renew_donors_every must be 0 or more")
-        if self.input not in browser.INPUT_MODES:
-            raise ValueError(f"input must be one of {', '.join(browser.INPUT_MODES)}")
-        if self.direct not in DIRECT_MODES:
-            raise ValueError(f"direct must be one of {', '.join(DIRECT_MODES)}")
         for name in ("gap_seconds", "dwell_seconds", "settle_seconds"):
             low, high = getattr(self, name)
             if not 0 <= low <= high:
@@ -429,8 +414,8 @@ class Pinned:
     def visit(self, url: str, dwell_seconds: float) -> bool:
         return self._call(self.session.visit, url, dwell_seconds)
 
-    def search(self, query: str, direct: bool = False, **locale: str) -> Any:
-        return self._call(lambda: self.session.search(query, direct, **locale))
+    def search(self, query: str, **locale: str) -> Any:
+        return self._call(lambda: self.session.search(query, **locale))
 
     def next_page(self) -> Any:
         return self._call(self.session.next_page)
@@ -582,9 +567,8 @@ class Scraper:
         A restart closes and reopens the browser, which can take longer than the
         search itself.
 
-        `hl` and `gl` override the settings for this query; its results page is
-        then opened directly whatever `direct` says. `links` asks the links of
-        the first that many organic results only (0: none).
+        `hl` and `gl` override the settings for this query. `links` asks the
+        links of the first that many organic results only (0: none).
         """
         pending = self.start_search(query, settle=settle, hl=hl, gl=gl, links=links)
         return [self._finish(r) for r in pending.records]
@@ -838,8 +822,7 @@ class Scraper:
             self._count_failure()
 
     def _search(self, identity: Identity, query: str):
-        """Search on this identity, once more from Google's front page if the
-        browser fails.
+        """Search on this identity, once more if the browser fails.
 
         A browser error is not Google's answer: a click that timed out under an
         overlay says nothing about the exit. Retiring on it throws away a
@@ -850,12 +833,8 @@ class Scraper:
         So are running out of memory and a crashed or closed browser: a second
         search on it fails again or hangs, so the exit is retired instead.
         """
-        mode = self.settings.direct
-        direct = mode == "all" or (mode == "follow-ups" and identity.queries > 0)
         try:
-            if self._locale:
-                return identity.session.search(query, direct=True, **self._locale)
-            return identity.session.search(query, direct=direct)
+            return identity.session.search(query, **self._locale)
         except Exception as exc:
             if (
                 isinstance(exc, MemoryError)
@@ -864,10 +843,7 @@ class Scraper:
             ):
                 raise
             self._event("search_retry", identity, error=describe_error(exc))
-            if mode == "all" or self._locale:
-                return identity.session.search(query, direct=True, **self._locale)
-            identity.session.visit(browser.HOME_URL, 0)
-            return identity.session.search(query)
+            return identity.session.search(query, **self._locale)
 
     def _renew_donor(self, identity: Identity) -> None:
         try:
@@ -880,8 +856,6 @@ class Scraper:
     def _upkeep(self, identity: Identity, more: bool) -> None:
         """What a served query leaves to do once its pages are out."""
         s = self.settings
-        if s.stop_after_read and self._identity is identity:
-            self._leave_page(identity)
         capped = identity.queries >= s.max_queries_per_exit
         if more and not capped and self._identity is identity and self._wants_restart(identity):
             self._restart(identity)
@@ -1091,8 +1065,6 @@ class Scraper:
                     channel=s.channel,
                     timezone_id=s.timezone_id,
                     browser_args=s.browser_args,
-                    rng=self._rng,
-                    input_mode=s.input,
                     hl=s.hl,
                     gl=s.gl,
                     params=self._params,
@@ -1270,12 +1242,6 @@ class Scraper:
             return
         self._event("restart", identity, queries=identity.queries)
         self._sleep(self._rng.uniform(*self.settings.settle_seconds))
-
-    def _leave_page(self, identity: Identity) -> None:
-        try:
-            identity.session.blank()
-        except Exception as exc:
-            self._event("blank_failed", identity, error=describe_error(exc))
 
     def _retire(self, reason: str) -> None:
         identity, self._identity = self._identity, None

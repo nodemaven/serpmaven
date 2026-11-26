@@ -82,7 +82,7 @@ class Inner:
     def close(self):
         pass
 
-    def search(self, query, direct=False, **locale):
+    def search(self, query, **locale):
         self.searched.append(query)
         # Passing Google's check leaves the browser with new cookies.
         self.cookie = self.cookie_after_search or self.cookie
@@ -171,23 +171,23 @@ def test_read_netlog_finds_the_search_request_and_its_response(tmp_path):
 def test_an_exits_first_query_goes_through_the_browser():
     client = Client([Response(SERVED.html)])
     s, _ = session(client, opened=False)
-    s.search("a b", direct=True)
-    s.search("c d", direct=True)
+    s.search("a b")
+    s.search("c d")
     assert s.inner.searched == ["a b"] and len(client.sent) == 1
 
 
 def test_without_headers_every_query_goes_through_the_browser():
     client = Client([])
     s, _ = session(client, headers=Headers())
-    s.search("q", direct=True)
+    s.search("q")
     assert client.sent == [] and s.inner.searched == ["q"]
 
 
 def test_served_pages_come_over_http_with_the_browsers_cookies():
     client = Client([Response(SERVED.html, set_cookie=["NID=2"])] * 2)
     s, _ = session(client)
-    first = s.search("best running shoes", direct=True)
-    s.search("best trail shoes", direct=True)
+    first = s.search("best running shoes")
+    s.search("best trail shoes")
     assert first.timings["http"] >= 0 and s.inner.searched == []
     assert dict(client.sent[0][1])["cookie"] == "SID=browser"
     assert dict(client.sent[1][1])["cookie"] == "SID=browser; NID=2"
@@ -203,36 +203,29 @@ def test_a_check_goes_to_the_browser_with_the_http_cookies_and_back():
     )
     s, _ = session(client)
     s.inner.cookie_after_search = "SID=fresh"
-    s.search("a b", direct=True)
-    passed = s.search("c d", direct=True)
+    s.search("a b")
+    passed = s.search("c d")
     assert s.inner.searched == ["c d"] and passed is SERVED
     assert s.inner.pushed == ["SID=browser; NID=2"]
-    s.search("e f", direct=True)
+    s.search("e f")
     assert dict(client.sent[-1][1])["cookie"] == "SID=fresh"
-
-
-def test_typed_queries_stay_in_the_browser():
-    client = Client([])
-    s, _ = session(client)
-    s.search("q", direct=False)
-    assert client.sent == [] and s.inner.searched == ["q"]
 
 
 def test_no_results_is_an_answer_but_an_empty_ordinary_page_is_not():
     empty_ok = '<html><body><div id="search"><div id="rso"></div></div></body></html>'
     client = Client([Response(pages.NO_RESULTS_PAGE), Response(empty_ok)])
     s, _ = session(client)
-    assert s.search("zzqx nothing", direct=True).timings.get("http") is not None
-    s.search("a b", direct=True)
+    assert s.search("zzqx nothing").timings.get("http") is not None
+    s.search("a b")
     assert s.inner.searched == ["a b"]
 
 
 def test_short_series_twice_turn_the_exit_to_the_browser():
     client = Client([Response(pages.NO_JS_PAGE), Response(pages.NO_JS_PAGE)])
     s, headers = session(client)
-    s.search("a", direct=True)
-    s.search("b", direct=True)
-    s.search("c", direct=True)
+    s.search("a")
+    s.search("b")
+    s.search("c")
     assert len(client.sent) == 2 and s.inner.searched == ["a", "b", "c"]
     assert headers.streak == 1 and not headers.disabled
 
@@ -243,7 +236,7 @@ def test_refusals_the_browser_gets_past_turn_the_exit_to_the_browser():
     client = Client([Response(pages.SORRY_PAGE, 429, pages.SORRY_URL)] * 3)
     s, headers = session(client)
     for q in "abc":
-        s.search(q, direct=True)
+        s.search(q)
     assert len(client.sent) == 2 and s.inner.searched == ["a", "b", "c"]
     assert headers.streak == 1
 
@@ -260,7 +253,7 @@ def test_three_exits_in_a_row_stepping_back_turn_the_run_to_the_browser():
 def test_next_page_follows_an_http_page_over_http():
     client = Client([Response(SERVED.html)] * 2)
     s, _ = session(client)
-    s.search("a b", direct=True)
+    s.search("a b")
     s.next_page()
     assert client.sent[1][0].endswith("&start=10")
 
@@ -268,7 +261,7 @@ def test_next_page_follows_an_http_page_over_http():
 def test_next_page_is_none_when_google_has_no_further_page():
     client = Client([Response(SERVED.html.replace('id="pnnext"', 'id="other"'))])
     s, _ = session(client)
-    s.search("a b", direct=True)
+    s.search("a b")
     assert s.next_page() is None
 
 
@@ -279,7 +272,7 @@ def test_one_session_records_a_netlog_and_reads_it_on_suspend(monkeypatch):
     other, _ = session(Client([]), headers=headers)
     assert s.inner.netlogs[0] and other.inner.netlogs == [None]
     assert not s.needs_restart()
-    s.search("q", direct=True)
+    s.search("q")
     assert s.needs_restart()
     s.suspend()
     s.resume()
@@ -312,8 +305,8 @@ def test_a_query_word_matches_a_title_word_split_by_a_slash_hyphen_or_dot():
 def test_hl_and_gl_of_one_query_go_into_its_http_url():
     client = Client([Response(SERVED.html)] * 2)
     s, _ = session(client)
-    s.search("a b", direct=True, hl="de", gl="at")
-    s.search("c d", direct=True)
+    s.search("a b", hl="de", gl="at")
+    s.search("c d")
     assert "hl=de" in client.sent[0][0] and "gl=at" in client.sent[0][0]
     assert "hl=en" in client.sent[1][0] and "gl=" not in client.sent[1][0]
 
@@ -323,7 +316,7 @@ def test_the_browsers_location_and_filters_go_into_the_http_url():
     inner = Inner()
     inner.params = {"uule": "w+CAIQICIFQXVzdGlu", "tbs": "qdr:w"}
     s, _ = session(client, inner=inner)
-    s.search("a b", direct=True)
+    s.search("a b")
     assert "&uule=w+CAIQICIFQXVzdGlu&tbs=qdr:w" in client.sent[0][0]
 
 
@@ -365,8 +358,8 @@ def test_cookies_deleted_over_http_leave_the_browser_on_the_next_check():
     calls = []
     inner.set_google_cookies = lambda header, deleted=(): calls.append((header, deleted))
     s, _ = session(client, inner=inner)
-    s.search("a b", direct=True)
-    s.search("c d", direct=True)
+    s.search("a b")
+    s.search("c d")
     assert calls == [("SID=browser", ("OLD",))]
 
 
@@ -397,7 +390,7 @@ def test_a_long_series_clears_the_runs_streak_before_it_ends():
     client = Client([Response(SERVED.html)] * hybrid.GOOD_SERIES)
     s, _ = session(client, headers=headers)
     for i in range(hybrid.GOOD_SERIES):
-        s.search(f"query {i}", direct=True)
+        s.search(f"query {i}")
     assert headers.streak == 0
 
 
@@ -411,7 +404,7 @@ def test_a_cookie_set_again_after_its_deletion_is_not_reported_deleted():
 def test_the_next_page_of_an_http_page_opens_that_query_when_http_is_off():
     client = Client([Response(SERVED.html)])
     s, headers = session(client)
-    s.search("a b", direct=True)
+    s.search("a b")
     headers.disabled = True  # another worker turned the run to the browser
     s.next_page()
     assert s.inner.opened == [("a b", 10)]
@@ -441,11 +434,11 @@ def test_response_header_names_are_reported_once_a_side_without_values(monkeypat
     )
     s.__enter__()
     s._opened_served = True
-    s.search("q", direct=True)  # the browser's, recorded
+    s.search("q")  # the browser's, recorded
     s.suspend()
     s.resume()
-    s.search("q2", direct=True)
-    s.search("q3", direct=True)
+    s.search("q2")
+    s.search("q3")
     reported = [e for e in events if e["event"] == "search_response_headers"]
     assert [e["side"] for e in reported] == ["browser", "http"]
     browser = reported[0]
@@ -466,7 +459,7 @@ def test_a_netlog_without_a_request_is_not_recorded_again(monkeypatch):
     headers = Headers()
     monkeypatch.setattr(hybrid, "read_netlog", lambda path, **kw: [])
     s, _ = session(Client([]), headers=headers)
-    s.search("q", direct=True)
+    s.search("q")
     s.suspend()
     s.resume()
     assert s.inner.netlogs[-1] is None and not s.needs_restart()
@@ -476,14 +469,14 @@ def test_a_page_with_only_places_is_served_over_http():
     html = pages.results_page(local=pages.local_pack_block()).replace('id="rso"', 'id="none"')
     client = Client([Response(html)])
     s, _ = session(client)
-    fetched = s.search("pizza near me", direct=True)
+    fetched = s.search("pizza near me")
     assert fetched.timings.get("http") is not None and s.inner.searched == []
 
 
 def test_links_of_an_http_page_are_asked_on_its_exit_with_its_cookies():
     client = Client([Response(SERVED.html, set_cookie=["NID=2"])])
     s, _ = session(client)
-    s.search("best running shoes", direct=True)
+    s.search("best running shoes")
     links = s.link_client()
     assert links._proxy_url == "http://127.0.0.1:1"  # the page's own proxy IP
     asked = Client([Response("<html></html>", status=302)])
@@ -498,7 +491,7 @@ def test_links_of_an_http_page_are_asked_on_its_exit_with_its_cookies():
 
 def test_a_page_the_browser_rendered_is_asked_with_the_browsers_cookies():
     s, _ = session(Client([]), opened=False)
-    s.search("a b", direct=True)  # an exit's first query goes through the browser
+    s.search("a b")  # an exit's first query goes through the browser
     assert s.link_client()._cookie == "SID=browser"
 
 
@@ -510,8 +503,8 @@ def test_with_pages_over_http_off_every_page_is_the_browsers_but_links_are_still
     s._http = client
     s.__enter__()
     s._opened_served = True
-    s.search("best running shoes", direct=True)
-    s.search("cold brew", direct=True, hl="de")
+    s.search("best running shoes")
+    s.search("cold brew", hl="de")
     assert client.sent == []
     links = s.link_client()
     assert links is not None and links._proxy_url == "http://127.0.0.1:1"
@@ -536,7 +529,7 @@ def test_cookie_records_fold_in_deletions_that_emptied_the_header():
 
 def test_no_link_client_before_chromiums_headers_are_read():
     s, _ = session(Client([]), headers=Headers())
-    s.search("q", direct=True)
+    s.search("q")
     assert s.link_client() is None
 
 
@@ -561,7 +554,7 @@ def test_link_headers_say_same_origin_after_the_language():
 
 def test_a_link_request_never_waits_longer_than_asked():
     s, _ = session(Client([Response(SERVED.html)]))
-    s.search("best running shoes", direct=True)
+    s.search("best running shoes")
     links = s.link_client()
     links._http = asked = Client([Response("<html></html>", status=302)] * 2)
     links.get("/url?sa=t&url=AAA", 3.5)
@@ -600,7 +593,7 @@ def test_cut_pages_stop_reading_at_the_footer_and_close_the_stream():
     client = Client([streamed])
     s, _ = session(client)
     s._cut_pages = True
-    fetched = s.search("best running shoes", direct=True)
+    fetched = s.search("best running shoes")
     assert client.options == {"stream": True}
     assert streamed.closed and streamed.read < len(streamed.body)
     assert 'id="sfooter"' in fetched.html and "x" * 5000 not in fetched.html
@@ -632,5 +625,5 @@ def test_a_page_without_the_footer_is_read_whole():
 def test_without_cut_pages_the_response_is_read_as_before():
     client = Client([Response(SERVED.html)])
     s, _ = session(client)
-    s.search("best running shoes", direct=True)
+    s.search("best running shoes")
     assert client.options == {}

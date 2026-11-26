@@ -67,7 +67,6 @@ class FakeSession:
         self.relay = FakeRelay.by_address.get((proxy or {}).get("server"))
         self.script, self.warm_ok = script, warm_ok
         self.visited, self.searched, self.closed = [], [], False
-        self.direct = []
         self.suspended = 0
         self.blanks = 0
         self.pages_turned = 0
@@ -120,9 +119,8 @@ class FakeSession:
         self._spend(WARM_BYTES, WARM_HOST)
         return self.warm_ok
 
-    def search(self, query, direct=False):
+    def search(self, query, **locale):
         self.searched.append(query)
-        self.direct.append(direct)
         self._spend(PAGE_BYTES, GOOGLE_HOST)
         return self._next()
 
@@ -238,15 +236,14 @@ def test_a_browser_error_twice_running_drops_the_exit():
     assert FakeSession.opened[0].closed
 
 
-def test_a_browser_error_is_retried_once_on_the_same_exit_from_the_front_page():
+def test_a_browser_error_is_retried_once_on_the_same_exit():
     events = []
-    settings = Settings(direct="follow-ups", gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    s = scraper([[SERVED, TimeoutError("click"), SERVED]], settings, events=events)
+    s = scraper([[SERVED, TimeoutError("click"), SERVED]], events=events)
     records = list(s.run(["a", "b"]))
     assert [r["search_metadata"]["status"] for r in records] == ["Success", "Success"]
     (session,) = FakeSession.opened
     assert session.searched == ["a", "b", "b"]
-    assert session.visited[-1] == "https://www.google.com/?hl=en"  # reloaded before the retry
+    assert "https://www.google.com/?hl=en" not in session.visited  # no detour to the front page
     assert records[1]["exit"]["queries_on_exit"] == 2
     assert [e["error"] for e in events if e["event"] == "search_retry"] == ["TimeoutError: click"]
 
@@ -592,9 +589,9 @@ def test_a_spare_keeps_its_browser_on_one_thread_of_its_own():
             self.threads.add(threading.get_ident())
             return super().visit(url, dwell)
 
-        def search(self, query, direct=False):
+        def search(self, query, **locale):
             self.threads.add(threading.get_ident())
-            return super().search(query, direct)
+            return super().search(query, **locale)
 
         def close(self):
             self.threads.add(threading.get_ident())
@@ -693,53 +690,6 @@ def test_a_record_says_where_its_time_went():
     assert "parse" in timings and "links" not in timings  # no resolver in these tests
 
 
-def test_every_query_opens_the_results_page_by_default():
-    list(scraper([[SERVED, SERVED, SERVED], [SERVED]]).run(["a", "b", "c"]))
-    assert FakeSession.opened[0].direct == [True, True, True]
-
-
-def test_with_direct_follow_ups_an_exits_first_query_goes_through_the_box():
-    settings = Settings(direct="follow-ups", gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    list(scraper([[SERVED, SERVED, SERVED], [SERVED]], settings).run(["a", "b", "c"]))
-    assert FakeSession.opened[0].direct == [False, True, True]
-
-
-def test_every_query_goes_through_the_box_with_direct_none():
-    settings = Settings(direct="none", gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    list(scraper([[SERVED, SERVED]], settings).run(["a", "b"]))
-    assert FakeSession.opened[0].direct == [False, False]
-
-
-def test_every_query_opens_the_results_page_with_direct_all():
-    settings = Settings(direct="all", gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    list(scraper([[SERVED, SERVED]], settings).run(["a", "b"]))
-    assert FakeSession.opened[0].direct == [True, True]
-
-
-def test_with_direct_all_a_retry_stays_off_the_box():
-    settings = Settings(direct="all", gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    list(scraper([[SERVED, TimeoutError("goto"), SERVED]], settings).run(["a", "b"]))
-    session = FakeSession.opened[0]
-    assert session.direct == [True, True, True]
-    assert session.visited.count("https://www.google.com/?hl=en") == 0
-
-
-def test_the_input_mode_reaches_the_browser_and_bad_modes_are_refused():
-    settings = Settings(input="words", gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    list(scraper([[SERVED]], settings).run(["a"]))
-    assert FakeSession.opened[0].options["input_mode"] == "words"
-    with pytest.raises(ValueError):
-        Settings(input="paste")
-    with pytest.raises(ValueError):
-        Settings(direct="sometimes")
-
-
-def test_a_retry_after_a_browser_error_types_from_the_front_page():
-    settings = Settings(direct="follow-ups", gap_seconds=(0, 0), dwell_seconds=(0, 0))
-    list(scraper([[SERVED, TimeoutError("click"), SERVED]], settings).run(["a", "b"]))
-    assert FakeSession.opened[0].direct == [False, True, False]
-
-
 def test_traffic_is_split_by_host_for_the_warm_up_the_pages_and_the_run():
     events = []
     s = scraper([[SERVED, SERVED]], events=events)
@@ -781,10 +731,10 @@ def test_links_resolve_while_the_browser_goes_on_to_the_next_query():
             return {}
 
     class Session(FakeSession):
-        def search(self, query, direct=False):
+        def search(self, query, **locale):
             if query == "b":
                 second_search.set()
-            return super().search(query, direct)
+            return super().search(query, **locale)
 
     FakeSession.opened, FakeRelay.by_address = [], {}
     scripts = [[SERVED, SERVED]]
@@ -801,15 +751,6 @@ def test_links_resolve_while_the_browser_goes_on_to_the_next_query():
     for r in records:
         assert r["organic_results"][2]["link"] == "https://resolved.example/"
         assert "links" in r["search_metadata"]["timings"]
-
-
-def test_stop_after_read_leaves_the_page_after_each_query_and_only_when_asked():
-    # One blank is the end of the warm-up; stop-after-read adds one per query.
-    list(scraper([[SERVED, SERVED]]).run(["a", "b"]))
-    assert FakeSession.opened[0].blanks == 1
-    settings = Settings(gap_seconds=(0, 0), dwell_seconds=(0, 0), stop_after_read=True)
-    list(scraper([[SERVED, SERVED]], settings).run(["a", "b"]))
-    assert FakeSession.opened[0].blanks == 3
 
 
 def test_the_warm_up_leaves_its_last_page_before_the_first_search():
@@ -1201,22 +1142,21 @@ def test_restart_every_counts_pages_the_browser_rendered_not_http_ones():
     assert FakeSession.opened[0].restarts == [5]
 
 
-def test_search_with_hl_and_gl_opens_the_page_directly_and_records_them():
+def test_search_with_hl_and_gl_passes_them_to_the_browser_and_records_them():
     class Locale(FakeSession):
-        def search(self, query, direct=False, **locale):
+        def search(self, query, **locale):
             self.locales = getattr(self, "locales", []) + [locale]
-            return super().search(query, direct)
+            return super().search(query, **locale)
 
     s = scraper(
         [[SERVED, SERVED]],
-        Settings(gap_seconds=(0, 0), dwell_seconds=(0, 0), direct="none"),
+        Settings(gap_seconds=(0, 0), dwell_seconds=(0, 0)),
         cls=Locale,
     )
     first = s.search("a", hl="de", gl="at")[0]
     second = s.search("b")[0]
     session = FakeSession.opened[0]
     assert session.locales == [{"hl": "de", "gl": "at"}, {}]
-    assert session.direct == [True, False]
     assert first["search_parameters"]["hl"] == "de" and first["search_parameters"]["gl"] == "at"
     assert second["search_parameters"]["hl"] == "en" and "gl" not in second["search_parameters"]
 
@@ -1385,12 +1325,12 @@ def test_a_refused_exit_from_a_set_another_worker_has_left_does_not_count_toward
     holder = {}
 
     class Raced(FakeSession):
-        def search(self, query, direct=False):
+        def search(self, query, **locale):
             if self.options.get("cookies") == DONOR:
                 # Another worker renews the set while this exit asks its
                 # first query, so its refusal is stale.
                 holder["s"]._donors.renew(renewed, "other-exit", lambda e: None)
-            return super().search(query, direct)
+            return super().search(query, **locale)
 
     s = scraper([[REFUSED], [SERVED]], settings, cls=Raced)
     holder["s"] = s

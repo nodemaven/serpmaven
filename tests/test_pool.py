@@ -18,11 +18,11 @@ class Recording(FakeSession):
         self.worker = worker
         self.thread = threading.get_ident()
 
-    def search(self, query, direct=False):
+    def search(self, query, **locale):
         # Long enough that one worker cannot drain the queue before the other
         # starts; the tests below are about sharing it.
         time.sleep(0.01)
-        return super().search(query, direct)
+        return super().search(query, **locale)
 
 
 def pool(scripts_per_worker, settings=None, cls=Recording, on_event=None, start=None):
@@ -121,7 +121,7 @@ def test_one_worker_drawing_refused_exits_does_not_stop_a_pool_another_serves():
     refusals = {"n": 0}
 
     class Waiting(Recording):
-        def search(self, query, direct=False):
+        def search(self, query, **locale):
             if self.worker == 1:
                 deadline = time.monotonic() + 10
                 while not refusing_done.is_set() and not permits.acquire(timeout=0.05):
@@ -137,7 +137,7 @@ def test_one_worker_drawing_refused_exits_does_not_stop_a_pool_another_serves():
                     assert turn.wait_for(lambda: searched["n"] >= start + 2, timeout=10)
                 if refusals["n"] == 3:
                     refusing_done.set()
-            return super().search(query, direct)
+            return super().search(query, **locale)
 
     settings = Settings(breaker=2, gap_seconds=(0, 0), dwell_seconds=(0, 0))
     worker0 = [[REFUSED], [REFUSED], [REFUSED]] + [[SERVED] * 20 for _ in range(3)]

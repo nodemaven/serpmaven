@@ -512,15 +512,13 @@ class HybridSession:
             and self._proxy_url is not None
         )
 
-    def search(
-        self, query: str, direct: bool = False, hl: str | None = None, gl: str | None = None
-    ) -> Fetched:
+    def search(self, query: str, hl: str | None = None, gl: str | None = None) -> Fetched:
         self._locale = {k: v for k, v in (("hl", hl), ("gl", gl)) if v}
-        if (direct or self._locale) and self._usable():
+        if self._usable():
             fetched = self._fetch(query, 1)
             if fetched is not None:
                 return fetched
-        return self._browser(lambda: self.inner.search(query, direct=direct, **self._locale), query)
+        return self._browser(lambda: self.inner.search(query, **self._locale), query)
 
     def next_page(self) -> Fetched | None:
         if self._last_source == "http" and self._last is not None:

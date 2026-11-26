@@ -28,11 +28,12 @@ def local_google(monkeypatch):
 
 
 @pytest.mark.parametrize("engine", list(engines.ENGINES))
-def test_engine_end_to_end_through_the_relay(engine, local_google):
+def test_engine_end_to_end_through_the_relay(engine, local_google, monkeypatch):
     try:
         importlib.import_module(PACKAGES[engine])
     except ImportError:
         pytest.skip(f"{engine} is not installed")
+    monkeypatch.setattr(fakegoogle, "CONSENT_ON_SEARCH", True)  # cleared on the first page
     settings = Settings(
         engine=engine,
         warmup="off",
@@ -42,7 +43,6 @@ def test_engine_end_to_end_through_the_relay(engine, local_google):
         dwell_seconds=(0, 0),
         browser_args=("--proxy-bypass-list=<-loopback>",),
         resolve_links=False,  # the fake page's /goto points at real Google
-        direct="follow-ups",  # the typed path, with the front page's consent overlay
     )
     # cloak is experimental and occasionally fails to start under load, so it
     # gets one retry; patchright gets none.
