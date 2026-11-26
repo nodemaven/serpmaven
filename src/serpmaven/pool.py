@@ -120,7 +120,7 @@ class Pool:
             threading.Thread(
                 target=self._work,
                 args=(i, scraper, todo, out, stopped),
-                name=f"gbs-worker-{i}",
+                name=f"serpmaven-worker-{i}",
                 daemon=True,
             )
             for i, scraper in enumerate(self._scrapers)
