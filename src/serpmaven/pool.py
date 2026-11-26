@@ -103,10 +103,14 @@ class Pool:
                     "clone_max_age, clone_refusals, clone_cache and breaker must be the "
                     "same for every worker"
                 )
-            if (s.donors, s.donors_out) != (first.donors, first.donors_out):
+            if (s.donors, s.donors_out, s.donor_files) != (
+                first.donors,
+                first.donors_out,
+                first.donor_files,
+            ):
                 raise ValueError(
-                    "workers share one store of cookie sets, so donors and donors_out "
-                    "must be the same for every worker"
+                    "workers share one store of cookie sets, so donors, donors_out and "
+                    "donor_files must be the same for every worker"
                 )
         templates = Templates(first.clones, first.clone_max_age, first.clone_refusals)
         breaker = Breaker(first.breaker)
