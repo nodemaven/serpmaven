@@ -1418,7 +1418,19 @@ class Scraper:
                 self._retire(verdict.kind)
                 yield record
                 return
-            yield self._served(query, page, fetched, verdict, identity, started, before, saved)
+            record = self._served(query, page, fetched, verdict, identity, started, before, saved)
+            if self._poisoned(identity, query, record):
+                # Later pages are judged like the first: a poisoned page 2
+                # ends the query's pages and the exit, and is not returned.
+                self._finish(record)
+                self.stats.pages_served -= 1
+                if record["search_metadata"]["fetched_with"] == "http":
+                    self.stats.pages_http -= 1
+                self.stats.exits_poisoned += 1
+                self._retire("poisoned")
+                yield self._failed(query, page, None, "results unrelated to the query", identity)
+                return
+            yield record
 
     def _links(self):
         if not self.settings.resolve_links or self._resolver_factory is None:
