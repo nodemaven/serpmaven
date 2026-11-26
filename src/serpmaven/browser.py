@@ -6,17 +6,14 @@
 - `locale` is never set: setting it through the context makes the main thread
   and Web Workers disagree. `timezone_id` goes through CDP emulation and agrees
   in workers, and is off unless asked for.
-- The first query on an exit is typed into the box. Later ones on the same
-  exit can go straight to `/search?q=` (`direct=True`): once Google has served
-  the exit, it serves those as readily, faster and without the autocomplete
-  traffic each keystroke fires.
+- Every query opens its results page, `/search?q=`, directly, without the
+  autocomplete traffic that typing into the search box fires.
 """
 
 from __future__ import annotations
 
 import base64
 import math
-import random
 import shutil
 import string
 import tempfile
@@ -177,10 +174,6 @@ def url_params(
     return out
 
 
-#: How a query gets into the search box: key by key, all at once, or one word
-#: at a time.
-INPUT_MODES = ("type", "insert", "words")
-SEARCH_BOX = "textarea[name='q'], input[name='q']"
 READY = "#rso, #search"
 # Reject first: it sets the smaller cookie. The middle selector is the
 # redirect form of the wall served to EU exits.
@@ -192,7 +185,6 @@ CONSENT_BUTTONS = (
 )
 NAV_TIMEOUT_MS = 60_000
 WARM_TIMEOUT_MS = 30_000
-TYPE_ATTEMPTS = 2
 
 
 @dataclass(frozen=True)
@@ -203,7 +195,7 @@ class Fetched:
     status: int | None
     html: str
     consent_dismissed: bool = False
-    #: Seconds per step, e.g. {"type": 3.1, "load": 4.2}: where the time went.
+    #: Seconds per step, e.g. {"load": 4.2}: where the time went.
     timings: dict[str, float] = field(default_factory=dict)
 
 
@@ -231,17 +223,12 @@ class BrowserSession:
         channel: str | None = None,
         timezone_id: str | None = None,
         browser_args: list[str] | tuple[str, ...] = (),
-        rng: random.Random | None = None,
         profile_dir: str | None = None,
-        input_mode: str = "type",
         hl: str = "en",
         gl: str | None = None,
         cookies: list[dict] | tuple[dict, ...] = (),
         params: dict[str, str] | None = None,
     ) -> None:
-        if input_mode not in INPUT_MODES:
-            raise ValueError(f"input mode must be one of {', '.join(INPUT_MODES)}")
-        self._input = input_mode
         self._hl = hl
         self._gl = gl
         self._params = dict(params or {})
@@ -255,7 +242,6 @@ class BrowserSession:
         self._channel = channel
         self._timezone_id = timezone_id
         self._args = list(browser_args)
-        self._rng = rng or random.Random()
         self._pw = None
         self._context = None
         # A given directory (a copy of another identity's profile) is used as
@@ -367,57 +353,26 @@ class BrowserSession:
 
     # -- searching -----------------------------------------------------------
 
-    def search(
-        self, query: str, direct: bool = False, hl: str | None = None, gl: str | None = None
-    ) -> Fetched:
-        """Type `query` into Google's box and return the page it led to; with
-        `direct`, open the results page for it instead. `hl` and `gl` override
-        the session's for this query, and open the results page directly."""
-        # The search box path opens the English front page and has no place
-        # for a country, so any other language or country goes through the URL,
-        # as do a location and filters.
-        if direct or hl or gl or self._gl or self._hl != "en" or self._params:
-            return self._search_direct(query, hl=hl, gl=gl)
-        page = self.page
-        timings: dict[str, float] = {}
-        mark = time.monotonic()
-        if not self._box_visible():
-            page.goto(HOME_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-            timings["home"] = round(time.monotonic() - mark, 2)
-            mark = time.monotonic()
-        dismissed, typed = False, None
-        # The page can take focus or swap the box while the query is being
-        # typed, which leaves only its first characters behind. The box is
-        # found again and the query retyped once before giving up.
-        for _ in range(TYPE_ATTEMPTS):
-            dismissed = self._dismiss_consent() or dismissed
-            box = self._type_query(query)
-            try:
-                typed = box.input_value()
-            except Exception:
-                typed = None  # the box was replaced and this handle is gone
-            if typed == query:
-                break
-        else:
-            raise RuntimeError(
-                f"search box holds {typed!r} after typing {query!r} "
-                f"{TYPE_ATTEMPTS} times; not submitting"
-            )
-        timings["type"] = round(time.monotonic() - mark, 2)
-        mark = time.monotonic()
-        # `no_wait_after=True` keeps `press` from waiting for the navigation a
-        # second time with Playwright's own 30 s default under ours.
-        with page.expect_navigation(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS) as nav:
-            box.press("Enter", no_wait_after=True, timeout=NAV_TIMEOUT_MS)
-        timings["load"] = round(time.monotonic() - mark, 2)
-        fetched = self._snapshot(nav.value, dismissed)
-        return replace(fetched, timings={**timings, **fetched.timings})
+    def search(self, query: str, hl: str | None = None, gl: str | None = None) -> Fetched:
+        """Open the results page for `query`. `hl` and `gl` override the
+        session's for this query."""
+        return self.open_results(query, hl=hl, gl=gl)
 
     def open_results(
         self, query: str, start: int = 0, hl: str | None = None, gl: str | None = None
     ) -> Fetched:
         """Open the results page for `query` from result `start` on."""
-        return self._search_direct(query, start, hl=hl, gl=gl)
+        url = results_url(query, hl or self._hl, gl or self._gl, start, self._params)
+        mark = time.monotonic()
+        response = self._goto_results(url)
+        # A fresh exit can be shown the consent wall instead of results; clear
+        # it and open the results again.
+        dismissed = self._dismiss_consent()
+        if dismissed:
+            response = self._goto_results(url)
+        load = round(time.monotonic() - mark, 2)
+        fetched = self._snapshot(response, dismissed)
+        return replace(fetched, timings={"load": load, **fetched.timings})
 
     def google_cookies(self) -> str:
         """The cookies the browser would send to Google search, as one header."""
@@ -455,21 +410,6 @@ class BrowserSession:
         if update:
             self._context.add_cookies(update)
 
-    def _search_direct(
-        self, query: str, start: int = 0, hl: str | None = None, gl: str | None = None
-    ) -> Fetched:
-        url = results_url(query, hl or self._hl, gl or self._gl, start, self._params)
-        mark = time.monotonic()
-        response = self._goto_results(url)
-        # A fresh exit can be shown the consent wall instead of results; clear
-        # it and open the results again, as the typed path does on the front page.
-        dismissed = self._dismiss_consent()
-        if dismissed:
-            response = self._goto_results(url)
-        load = round(time.monotonic() - mark, 2)
-        fetched = self._snapshot(response, dismissed)
-        return replace(fetched, timings={"load": load, **fetched.timings})
-
     def _goto_results(self, url: str):
         """Open a results page. Google sometimes answers first with a check page
         whose own script loads the results URL again before the first load is
@@ -483,39 +423,6 @@ class BrowserSession:
                 raise
             self.page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
             return None
-
-    def _box_visible(self) -> bool:
-        try:
-            return any(h.is_visible() for h in self.page.query_selector_all(SEARCH_BOX))
-        except Exception:
-            # The page navigated while it was being read, as a warm-up page
-            # left idle can; the front page is loaded instead.
-            return False
-
-    def _type_query(self, query: str):
-        page = self.page
-        # Act on the handle that was found, never on the selector again: the
-        # selector also matches a hidden field, and `page.click` would pick it.
-        box = page.wait_for_selector(SEARCH_BOX, state="visible", timeout=NAV_TIMEOUT_MS)
-        box.click()
-        # A results page keeps the previous query in the box, and a failed
-        # attempt leaves part of this one. Typing after either appends, and the
-        # appended query returns a real page for the wrong question. Select it
-        # so the typing replaces it.
-        if box.input_value():
-            box.press("ControlOrMeta+a")
-        if self._input == "insert":
-            page.keyboard.insert_text(query)
-        elif self._input == "words":
-            words = query.split(" ")
-            for i, word in enumerate(words):
-                last = i == len(words) - 1
-                page.keyboard.insert_text(word if last else word + " ")
-                if not last:
-                    time.sleep(self._rng.uniform(0.15, 0.5))
-        else:
-            box.type(query, delay=self._rng.randint(45, 140))
-        return box
 
     def blank(self) -> None:
         """Leave the current page, stopping whatever it is still loading."""

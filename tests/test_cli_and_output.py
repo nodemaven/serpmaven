@@ -490,20 +490,3 @@ def test_every_worker_of_a_run_starts_from_the_same_kept_sets():
     first = cli._settings(args, worker=0).donors
     path.write_text(json.dumps(_set("second", time.time())))
     assert cli._settings(args, worker=1).donors == first
-
-
-def test_entry_flags_warn_and_still_apply(capsys):
-    parse = cli._parser().parse_args
-    args = parse(["search", "q", "--no-proxy", "--direct", "none", "--input", "insert"])
-    cli._warn_deprecated(args)
-    err = capsys.readouterr().err
-    assert err.startswith("warning: --input, --direct are deprecated")
-    assert "results pages will always be opened directly" in err and err.count("\n") == 1
-    settings = cli._build(args, None)[0].settings
-    assert settings.direct == "none" and settings.input == "insert"
-    settings = cli._build(parse(["search", "q", "--no-proxy"]), None)[0].settings
-    assert settings.direct == "all" and settings.input == "type"
-    cli._warn_deprecated(parse(["search", "q", "--no-proxy", "--stop-after-read"]))
-    assert capsys.readouterr().err == (
-        "warning: --stop-after-read is deprecated and will be removed in the next release\n"
-    )

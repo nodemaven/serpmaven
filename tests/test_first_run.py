@@ -400,7 +400,7 @@ def test_google_reloading_its_results_page_is_not_a_failed_search():
     session = BrowserSession(None)
     then = "https://www.google.com/search?q=best+running+shoes&hl=en"
     session.page = _ReloadingPage(then)
-    fetched = session.search("best running shoes", direct=True)
+    fetched = session.search("best running shoes")
     assert session.page.loads == ["domcontentloaded"]
     assert fetched.url == then and fetched.status is None
     assert fetched.html == "<html>results</html>"
@@ -412,4 +412,4 @@ def test_a_navigation_taken_over_by_another_page_still_fails():
     session = BrowserSession(None)
     session.page = _ReloadingPage("https://trends.google.com/trends/?hl=en")
     with pytest.raises(Exception, match="interrupted"):
-        session.search("best running shoes", direct=True)
+        session.search("best running shoes")

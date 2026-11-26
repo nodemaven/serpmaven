@@ -27,7 +27,6 @@ from .pool import Pool, WorkerFailed
 from .progress import Progress
 from .proxy import NodeMavenDemoSource, NodeMavenSource, ProxyTemplate
 from .scraper import (
-    DIRECT_MODES,
     KEEP_HOURS,
     RENEW_EVERY,
     ExitsRefused,
@@ -255,30 +254,6 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         "retired one is replaced without waiting (default 0; each costs a warm-up)",
     )
     p.add_argument(
-        "--input",
-        choices=browser.INPUT_MODES,
-        default=None,
-        help="deprecated, to be removed in the next release: "
-        "how a query is entered into Google's search box: typed key by key "
-        "(default), inserted at once, or inserted word by word",
-    )
-    p.add_argument(
-        "--direct",
-        choices=DIRECT_MODES,
-        default=None,
-        help="deprecated, to be removed in the next release: "
-        "which queries open the results page directly instead of going through "
-        "the search box: all (default), all but the first on each proxy IP, or none; "
-        "a language other than en, a country, a location or a filter always opens it directly",
-    )
-    p.add_argument(
-        "--stop-after-read",
-        action="store_true",
-        help="deprecated, to be removed in the next release: "
-        "leave each results page for about:blank once it is read (experimental: "
-        "saves traffic Google's late scripts would spend)",
-    )
-    p.add_argument(
         "--gap",
         type=_pair,
         default=(2.0, 5.0),
@@ -410,47 +385,9 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="log identities to stderr")
 
 
-#: Defaults of the flags on their way out (see `_warn_deprecated`).
-INPUT_DEFAULT, DIRECT_DEFAULT = "type", "all"
-#: Flags that still work and warn: the flag, the attribute argparse gives it, and what
-#: comes instead.
-DEPRECATED_FLAGS = (
-    ("--input", "input", "results pages will always be opened directly"),
-    ("--direct", "direct", "results pages will always be opened directly"),
-    ("--stop-after-read", "stop_after_read", None),
-)
-
-
-def _or(value: Any, default: Any) -> Any:
-    return default if value is None else value
-
-
-def _warn_deprecated(args) -> None:
-    """One line on stderr naming the deprecated flags this run was given and what
-    replaces them."""
-    given = [
-        (flag, instead)
-        for flag, name, instead in DEPRECATED_FLAGS
-        # Identity, not equality: a value of 0 was given, and 0 == False.
-        if (value := getattr(args, name, None)) is not None and value is not False
-    ]
-    if not given:
-        return
-    flags = [flag for flag, _ in given]
-    instead = list(dict.fromkeys(i for _, i in given if i))
-    line = (
-        f"warning: {', '.join(flags)} {'is' if len(flags) == 1 else 'are'} deprecated and will "
-        "be removed in the next release"
-    )
-    if instead:
-        line += "; " + "; ".join(instead)
-    print(line, file=sys.stderr)
-
-
 @contextmanager
 def _proxy_source(args) -> Iterator[Any]:
     """One proxy source per run, shared by every worker; a demo sub-user is deleted on exit."""
-    _warn_deprecated(args)
     kind, url = _checked_source(args)
     if kind == "nodemaven":
         proxy = NodeMavenSource(country=args.country)
@@ -608,9 +545,6 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         max_queries_per_exit=args.max_per_exit,
         restart_every=args.restart_every,
         spare=args.spare,
-        input=_or(args.input, INPUT_DEFAULT),
-        direct=_or(args.direct, DIRECT_DEFAULT),
-        stop_after_read=args.stop_after_read,
         gap_seconds=args.gap,
         headless=args.headless,
         channel=args.channel,

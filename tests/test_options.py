@@ -64,9 +64,6 @@ SAMPLES = {
     "--cookies-out": Sample("sets", "donors_out"),
     "--no-keep-cookies": Sample(field="donors_out"),
     # Queries and pages.
-    "--input": Sample("insert", "input"),
-    "--direct": Sample("none", "direct"),
-    "--stop-after-read": Sample(field="stop_after_read"),
     "--gap": Sample("0,1", "gap_seconds"),
     "--no-hybrid": Sample(field="hybrid"),
     "--cut-http-pages": Sample(field="cut_http_pages"),
