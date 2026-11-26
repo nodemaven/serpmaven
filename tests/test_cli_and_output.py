@@ -412,6 +412,24 @@ def test_sets_another_browser_build_made_are_not_used(tmp_path):
     assert cli.kept_cookie_sets(str(tmp_path), build="patchright/bundled/2.0") == ()
 
 
+def test_a_new_slot_leaves_other_builds_and_broken_files_alone(tmp_path):
+    from serpmaven.scraper import Donors
+
+    nid = {"name": "NID", "value": "new", "domain": ".google.com", "path": "/"}
+    other = {"t": time.time(), "browser": "patchright/chrome/1.0", "cookies": [nid]}
+    stale = {"t": time.time() - 48 * 3600, "browser": "patchright/bundled/1.0", "cookies": [nid]}
+    (tmp_path / "donor_0.json").write_text(json.dumps(other), encoding="utf-8")
+    (tmp_path / "donor_1.json").write_text("{broken", encoding="utf-8")
+    (tmp_path / "donor_2.json").write_text(json.dumps(stale), encoding="utf-8")
+    Donors((), str(tmp_path), build="patchright/bundled/1.0").renew((nid,), "e", lambda e: None)
+    assert json.loads((tmp_path / "donor_0.json").read_text())["browser"] == "patchright/chrome/1.0"
+    assert (tmp_path / "donor_1.json").read_text() == "{broken"
+    assert (
+        json.loads((tmp_path / "donor_2.json").read_text())["browser"] == "patchright/bundled/1.0"
+    )
+    assert json.loads((tmp_path / "donor_2.json").read_text())["t"] > time.time() - 60
+
+
 def test_the_browser_build_names_engine_channel_and_package_version():
     parse = cli._parser().parse_args
     bundled = cli.browser_build(parse(["search", "q", "--no-proxy"]))

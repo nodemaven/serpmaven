@@ -112,6 +112,9 @@ DONOR_REFUSALS = 2
 #: Cookie sets renewal keeps, each from a different served exit, so a refused
 #: set has fresh ones to hand over to instead of one set overwritten in place.
 DONOR_SLOTS = 4
+#: How old a cookie set an earlier run saved may be and still start a run.
+#: A set kept 24 hours on the same machine was served as often as a fresh one.
+KEEP_HOURS = 24
 #: Served queries on an exit between renewals of the cookie set, by default.
 #: An exit started from a set gets results as good as one warmed up from scratch,
 #: at a fraction of the traffic, so the first set is taken early: a short session,
@@ -648,19 +651,41 @@ class Donors:
         if error:
             emit({"event": "donor_write_failed", "set": at, "error": error})
 
+    def _free_name(self) -> str:
+        """A `donor_<n>.json` name for a new slot. Not one of this run's, and
+        not a file in `out` that may still be worth something - a set of
+        another browser build, a broken or unreadable file: only a set older
+        than KEEP_HOURS is written over."""
+        taken = set(self._files)
+        now = time.time()
+        n = 0
+        while True:
+            name = f"donor_{n}.json"
+            n += 1
+            if name in taken:
+                continue
+            path = os.path.join(self.out, name)
+            if not os.path.exists(path):
+                return name
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    written = json.load(fh).get("t")
+                if (
+                    isinstance(written, (int, float))
+                    and not isinstance(written, bool)
+                    and 0 <= now - written
+                    and now - written > KEEP_HOURS * 3600
+                ):
+                    return name  # stale: nothing reads it any more
+            except (OSError, ValueError, AttributeError):
+                pass  # unreadable or broken: left for a person to look at
+
     def _write(self, at: int, cookies: tuple[dict, ...]) -> str | None:
         """Write a set for the next run's `donors`, readable by its owner only;
         the error, if the write failed - the set in memory is still used."""
         assert self.out is not None
         while len(self._files) <= at:
-            taken = set(self._files)
-            self._files.append(
-                next(
-                    f"donor_{n}.json"
-                    for n in range(len(taken) + 1)
-                    if f"donor_{n}.json" not in taken
-                )
-            )
+            self._files.append(self._free_name())
         path = os.path.join(self.out, self._files[at])
         tmp = None
         try:

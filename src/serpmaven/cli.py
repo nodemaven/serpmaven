@@ -26,6 +26,7 @@ from .progress import Progress
 from .proxy import NodeMavenDemoSource, NodeMavenSource, ProxyTemplate
 from .scraper import (
     DIRECT_MODES,
+    KEEP_HOURS,
     RENEW_EVERY,
     ExitsRefused,
     ProxyRefused,
@@ -34,10 +35,6 @@ from .scraper import (
     filter_params,
 )
 from .server import locale_problem
-
-#: How old a cookie set an earlier run saved may be and still start this run.
-#: A set kept 24 hours on the same machine was served as often as a fresh one.
-KEEP_HOURS = 24
 
 
 def main(argv: list[str] | None = None, prog: str = "serpmaven") -> int:
