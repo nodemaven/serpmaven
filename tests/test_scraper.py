@@ -1323,6 +1323,21 @@ def test_poisoned_pages_between_normal_ones_still_retire_the_exit():
     assert s.stats.exits_poisoned == 1 and s.stats.pages_served == 5
 
 
+def test_later_pages_are_judged_for_poisoning_too():
+    # Page 3 is the third unrelated page on the exit: it is not returned, the
+    # exit is retired and the next query goes to a new one.
+    settings = Settings(pages=3, gap_seconds=(0, 0), dwell_seconds=(0, 0))
+    s = scraper([[SERVED] * 3, [SERVED] * 3], settings)
+    records = list(s.run(["mortgage calculator taxes", "beginner swimming guide"]))
+    first = records[:3]
+    assert [r["search_parameters"]["page"] for r in first] == [1, 2, 3]
+    assert "error" not in first[0] and "error" not in first[1]
+    assert first[2]["error"] == "results unrelated to the query"
+    assert s.stats.exits_poisoned == 1
+    assert FakeSession.opened[1].searched == ["beginner swimming guide"]
+    assert s.stats.pages_served == 5
+
+
 def test_two_unrelated_pages_in_five_are_not_poisoning():
     s = scraper([[SERVED] * 7])
     u = ["symptoms of strep throat", "mortgage calculator taxes", "fish tank setup"]

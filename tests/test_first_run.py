@@ -194,8 +194,9 @@ def test_verbose_keeps_the_machine_readable_summary(monkeypatch, capsys):
     assert cli.main(["search", "q", "--no-proxy", "-v"]) == 0
     assert 'summary: {"pages_served": 0, "identities": 1}' in capsys.readouterr().err
     assert cli.main(["search", "q", "--no-proxy"]) == 0
-    err = capsys.readouterr().err
-    assert "summary: {" not in err and err.startswith("done in ")
+    err = capsys.readouterr().err.splitlines()
+    assert err[0].startswith("estimate: 1 results page") and err[1].startswith("done in ")
+    assert not any(line.startswith("summary: {") for line in err)
 
 
 def test_no_summary_when_nothing_started():

@@ -73,6 +73,7 @@ SAMPLES = {
     "--stop-after-read": Sample(field="stop_after_read"),
     "--gap": Sample("0,1", "gap_seconds"),
     "--no-hybrid": Sample(field="hybrid"),
+    "--cut-http-pages": Sample(field="cut_http_pages"),
     "--hl": Sample("de", "hl"),
     "--gl": Sample("de", "gl"),
     "--location": Sample("Austin,Texas,United States", "location"),
@@ -94,6 +95,8 @@ SAMPLES = {
     "--resume": Sample(),
     "--patient": Sample("10"),
     "--price-per-gb": Sample("3"),
+    "--cache-ttl": Sample("60"),
+    "--cache-dir": Sample("cache"),
     # serve, mcp
     "--host": Sample("0.0.0.0"),
     "--port": Sample("8001"),
