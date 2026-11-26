@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import shlex
@@ -437,6 +438,8 @@ def _checked_source(args) -> tuple[str, str | None]:
             "--country only applies to NodeMaven: remove it, and put the country in "
             "your provider's proxy URL instead"
         )
+    if kind == "url":
+        ProxyTemplate(url)  # a malformed URL fails here, before any file is opened
     return kind, url
 
 
@@ -578,6 +581,19 @@ def _resume(args, fmt: str, queries: list[str]) -> list[str]:
     return left
 
 
+def _proxy_identity(args) -> str:
+    """Which proxy a run goes through, for the cache key: the source kind, and
+    for a proxy URL a hash of it - its country targeting is part of the URL, and
+    no credential is kept in the clear."""
+    try:
+        kind, url = _source_kind(args)
+    except ValueError:
+        return "none"
+    if not url:
+        return kind
+    return f"{kind}:{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}"
+
+
 def _cache(args) -> ResultCache | None:
     """The results cache this run reads and fills, or None when --cache-ttl is off."""
     if not args.cache_ttl:
@@ -590,6 +606,7 @@ def _cache(args) -> ResultCache | None:
         "links": settings.links,
         "resolve_links": settings.resolve_links,
         "proxy_country": getattr(args, "country", None),
+        "proxy": _proxy_identity(args),
         **filter_params(settings),
     }
     directory = args.cache_dir or config.directory() / "cache"
@@ -644,11 +661,17 @@ class _Answers:
     def __init__(self, cache: ResultCache | None) -> None:
         self.cache = cache
         self.records: dict[str, list[dict[str, Any]]] = {}
+        #: Queries asked twice at the same time (two workers): their pages could
+        #: mix two answers, so neither is kept.
+        self.mixed: set[str] = set()
 
     def add(self, q: str, record: dict[str, Any], complete: bool) -> None:
         if self.cache is None:
             return
         if record["search_parameters"].get("page", 1) == 1:
+            unfinished = self.records.get(q)
+            if unfinished and unfinished[-1]["search_metadata"]["status"] == "Success":
+                self.mixed.add(q)  # another answer to it is still coming in
             self.records[q] = []  # a first page starts the query's answer over
         self.records.setdefault(q, []).append(record)
         if complete:
@@ -656,8 +679,10 @@ class _Answers:
             # Pages 1..n in order: the same query asked twice at once on two
             # workers can leave a list that starts at a later page.
             pages = [r["search_parameters"].get("page", 1) for r in got]
-            if pages == list(range(1, len(got) + 1)) and all(
-                r["search_metadata"]["status"] == "Success" for r in got
+            if (
+                q not in self.mixed
+                and pages == list(range(1, len(got) + 1))
+                and all(r["search_metadata"]["status"] == "Success" for r in got)
             ):
                 self.cache.put(q, got)
 
@@ -693,7 +718,12 @@ def _search(args) -> int:
         if queries:
             if progress is not None:  # the human output; -v keeps stderr machine-readable
                 print(
-                    _estimate(len(queries), args.pages, args.workers, args.price_per_gb),
+                    _estimate(
+                        sum(1 for q in queries if q.strip()),
+                        args.pages,
+                        args.workers,
+                        args.price_per_gb,
+                    ),
                     file=sys.stderr,
                 )
             code = _search_live(args, queries, writer, progress, failed, cache)

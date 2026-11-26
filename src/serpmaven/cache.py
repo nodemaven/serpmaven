@@ -44,8 +44,11 @@ class ResultCache:
         if not isinstance(records, list) or not records:
             return None
         for record in records:
-            if not isinstance(record, dict) or not isinstance(
-                record.setdefault("search_metadata", {}), dict
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("search_parameters"), dict)
+                or not isinstance(record.get("search_metadata"), dict)
+                or "status" not in record["search_metadata"]
             ):
                 return None  # not what this cache writes: ask Google instead
             record["search_metadata"]["cached"] = True

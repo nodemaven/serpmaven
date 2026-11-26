@@ -109,7 +109,29 @@ def test_an_answer_that_does_not_start_at_page_1_is_not_kept(tmp_path):
     # Two workers on the same query: A's page 1, B's page 1, A's page 2, B's page 2.
     for page, complete in ((1, False), (1, False), (2, True), (2, True)):
         answers.add("pizza", _record("pizza", page=page), complete)
-    assert kept == ["pizza"]  # the second "complete" holds page 2 alone
+    assert kept == []  # two answers were coming in at once: neither is kept
+
+
+def test_a_query_asked_again_after_its_answer_is_still_kept(tmp_path):
+    kept = []
+    answers = cli._Answers(type("C", (), {"put": lambda self, q, r: kept.append(q)})())
+    for page, complete in ((1, False), (2, True), (1, False), (2, True)):
+        answers.add("pizza", _record("pizza", page=page), complete)
+    assert kept == ["pizza", "pizza"]
+
+
+def test_the_proxy_is_part_of_the_cache_key_without_its_password(monkeypatch):
+    parse = cli._parser().parse_args
+    one = cli._proxy_identity(parse(["search", "q", "--proxy", "http://u-country-us:secret@g:1"]))
+    two = cli._proxy_identity(parse(["search", "q", "--proxy", "http://u-country-de:secret@g:1"]))
+    assert one != two and "secret" not in one and one.startswith("url:")
+
+
+def test_a_malformed_proxy_url_is_refused_before_the_output_is_touched(tmp_path):
+    out = tmp_path / "out.jsonl"
+    out.write_text("kept\n", encoding="utf-8")
+    code = cli.main(["search", "pizza", "--proxy", "not-a-url", "-o", str(out)])
+    assert code != 0 and out.read_text(encoding="utf-8") == "kept\n"
 
 
 def test_a_malformed_cache_file_falls_back_to_a_search(tmp_path):
@@ -143,4 +165,12 @@ def test_the_estimate_scales_with_pages_and_workers():
     assert "1000 results pages, roughly 560-1560 MB" in one and "150-240 min" in one
     assert "75-120 min" in cli._estimate(1000, 1, 2, None)
     assert "$0.00-0.00 at $0/GB" in cli._estimate(10, 1, 1, 0)
+
+
+def test_blank_lines_are_not_in_the_estimate(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_build", lambda args, proxy, **kw: (_Recorder(), ""))
+    queries = tmp_path / "q.txt"
+    queries.write_text("pizza\n\ntacos\n", encoding="utf-8")
+    cli.main(["search", "-f", str(queries), "--no-proxy", "-o", str(tmp_path / "o.jsonl")])
+    assert "estimate: 2 results pages" in capsys.readouterr().err
     assert cli._estimate(1, 1, 1, None).startswith("estimate: 1 results page,")
