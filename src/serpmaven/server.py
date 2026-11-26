@@ -89,7 +89,7 @@ class Worker:
         self.prewarming = prewarm
         self._log = log or (lambda message: print(message, file=sys.stderr))
         self._jobs: queue.Queue = queue.Queue()
-        self._thread = threading.Thread(target=self._loop, name="gbs-worker", daemon=True)
+        self._thread = threading.Thread(target=self._loop, name="serpmaven-worker", daemon=True)
         self._started = threading.Event()
         #: Set once the prewarm is over, served or not (at once without one).
         self.ready = threading.Event()

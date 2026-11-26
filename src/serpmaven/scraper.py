@@ -412,7 +412,7 @@ class Pinned:
     """
 
     def __init__(self, make: Callable[[], Any]) -> None:
-        self._thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gbs-identity")
+        self._thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="serpmaven-identity")
         try:
             self.session = self._call(make)
         except BaseException:
@@ -990,7 +990,9 @@ class Scraper:
         limit = self._link_limit if self._link_limit is not None else self.settings.links
         if resolver is not None and limit != 0:
             if self._link_pool is None:
-                self._link_pool = ThreadPoolExecutor(LINK_WORKERS, thread_name_prefix="gbs-links")
+                self._link_pool = ThreadPoolExecutor(
+                    LINK_WORKERS, thread_name_prefix="serpmaven-links"
+                )
             make = getattr(identity.session, "link_client", None)
             client = make() if make else None
             failed = functools.partial(
@@ -1217,7 +1219,7 @@ class Scraper:
             return
         if self._warmer is None:
             self._warmer = ThreadPoolExecutor(
-                max_workers=self.settings.spare, thread_name_prefix="gbs-warm"
+                max_workers=self.settings.spare, thread_name_prefix="serpmaven-warm"
             )
         while len(self._spares) < self.settings.spare:
             self._spares.append(self._warmer.submit(self._warm, True))

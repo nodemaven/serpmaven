@@ -295,7 +295,7 @@ class BrowserSession:
 
     def __enter__(self) -> BrowserSession:
         if self._profile is None:
-            self._profile = tempfile.mkdtemp(prefix="gbs-profile-")
+            self._profile = tempfile.mkdtemp(prefix="serpmaven-profile-")
         try:
             self._open()
         except Exception:

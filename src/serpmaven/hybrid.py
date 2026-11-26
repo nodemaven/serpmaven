@@ -218,6 +218,22 @@ def impersonate_for(request: dict | None) -> str:
     return f"chrome{usable[-1] if usable else targets[0]}"
 
 
+def curl_session(request: dict | None, proxy_url: str | None):
+    """A curl_cffi session through `proxy_url` that presents the Chrome version
+    of the browser that sent `request`, with no headers of its own; and the
+    impersonation target it uses."""
+    from curl_cffi import requests as cr
+
+    target = impersonate_for(request)
+    session = cr.Session(
+        impersonate=target,
+        default_headers=False,
+        proxies={"http": proxy_url, "https": proxy_url},
+        timeout=TIMEOUT,
+    )
+    return session, target
+
+
 def read_until(response: Any, marker: bytes) -> str:
     """The body of a streamed response up to and including the chunk that holds
     `marker`; the rest is never read, and the stream is closed. A body without
@@ -315,14 +331,7 @@ class LinkClient:
         """Status, Location and body of `path`, redirects not followed, within
         `timeout` seconds (at most `TIMEOUT`); None on an error."""
         if self._http is None:
-            from curl_cffi import requests as cr
-
-            self._http = cr.Session(
-                impersonate=impersonate_for(self._request),
-                default_headers=False,
-                proxies={"http": self._proxy_url, "https": self._proxy_url},
-                timeout=TIMEOUT,
-            )
+            self._http, _ = curl_session(self._request, self._proxy_url)
         try:
             response = self._http.get(
                 self._origin + path,
@@ -450,7 +459,7 @@ class HybridSession:
         ):
             self.inner.netlog = None
             return
-        fd, self._netlog = tempfile.mkstemp(prefix="gbs-netlog-", suffix=".json")
+        fd, self._netlog = tempfile.mkstemp(prefix="serpmaven-netlog-", suffix=".json")
         os.close(fd)
         self.inner.netlog = self._netlog
 
@@ -619,13 +628,7 @@ class HybridSession:
 
     def _client(self):
         if self._http is None:
-            from curl_cffi import requests as cr
-
-            proxies = {"http": self._proxy_url, "https": self._proxy_url}
-            target = impersonate_for(self._headers.request)
-            self._http = cr.Session(
-                impersonate=target, default_headers=False, proxies=proxies, timeout=TIMEOUT
-            )
+            self._http, target = curl_session(self._headers.request, self._proxy_url)
             self._emit({"event": "hybrid_client", "impersonate": target})
         return self._http
 
