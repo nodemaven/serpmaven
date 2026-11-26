@@ -94,6 +94,8 @@ SAMPLES = {
     "--resume": Sample(),
     "--patient": Sample("10"),
     "--price-per-gb": Sample("3"),
+    "--cache-ttl": Sample("60"),
+    "--cache-dir": Sample("cache"),
     # serve, mcp
     "--host": Sample("0.0.0.0"),
     "--port": Sample("8001"),
