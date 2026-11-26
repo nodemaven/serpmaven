@@ -164,6 +164,8 @@ def test_the_estimate_scales_with_pages_and_workers():
     one = cli._estimate(1000, 1, 1, None)
     assert "1000 results pages, roughly 560-1560 MB" in one and "150-240 min" in one
     assert "75-120 min" in cli._estimate(1000, 1, 2, None)
+    # one query of 100 pages runs on one worker, however many there are
+    assert cli._estimate(1, 100, 10, None) == cli._estimate(1, 100, 1, None)
     assert "$0.00-0.00 at $0/GB" in cli._estimate(10, 1, 1, 0)
 
 

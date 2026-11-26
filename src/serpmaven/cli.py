@@ -625,7 +625,9 @@ def _estimate(queries: int, pages: int, workers: int, price: float | None) -> st
     """One line on what a run of `queries` is likely to cost in traffic and time."""
     n = queries * pages
     low, high = (n * mb + WARMUP_MB for mb in MB_PER_PAGE)
-    fast, slow = (n / (rate * max(workers, 1)) * 60 for rate in reversed(PAGES_PER_HOUR))
+    # A query's pages go to one worker: more workers than queries sit idle.
+    busy = max(min(workers, queries), 1)
+    fast, slow = (n / (rate * busy) * 60 for rate in reversed(PAGES_PER_HOUR))
     line = (
         f"estimate: {n} results page{'s' if n != 1 else ''}, roughly {low:.0f}-{high:.0f} MB "
         f"of proxy traffic and {max(fast, 1):.0f}-{max(slow, 1):.0f} min"
