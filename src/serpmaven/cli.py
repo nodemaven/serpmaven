@@ -139,8 +139,9 @@ def _parser(prog: str = "serpmaven") -> argparse.ArgumentParser:
     mcp.add_argument(
         "--prewarm", action="store_true", help="find a proxy IP Google serves before the first call"
     )
-    # An agent waits for the answer: the top results' links are what it reads.
-    mcp.set_defaults(handler=_mcp, links=MCP_LINKS)
+    # An agent waits for the answer: the top results' links are what it reads,
+    # and Web results only are the organic links it needs, on lighter pages.
+    mcp.set_defaults(handler=_mcp, links=MCP_LINKS, lean=True)
 
     parse = sub.add_parser("parse", help="parse a saved results page, offline")
     parse.add_argument("file", type=Path)
@@ -399,6 +400,14 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         "--lr", metavar="LANGUAGES", help="only documents in these languages, e.g. lang_en"
     )
     p.add_argument(
+        "--lean",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Google's Web results only (udm=14): the organic links without the AI "
+        "Overview, People also ask, related searches or map places; lighter pages. "
+        "On by default for mcp; --no-lean asks the full page",
+    )
+    p.add_argument(
         "--save-html",
         type=Path,
         metavar="DIR",
@@ -574,6 +583,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         autocorrect=not args.no_autocorrect,
         cr=args.cr,
         lr=args.lr,
+        lean=bool(args.lean),
         donors=tuple(browser.load_cookies(f) for f in args.cookies or ()),
         renew_donors_every=args.renew_cookies,
         donors_out=args.cookies_out,

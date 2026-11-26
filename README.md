@@ -344,9 +344,10 @@ In PowerShell, call `curl.exe` (plain `curl` there is another command).
 
 It uses the login saved with `serpmaven login`; or add
 `"env": {"NODEMAVEN_LOGIN": "...", "NODEMAVEN_PASSWORD": "..."}`. One tool,
-`google_search(query, pages, hl, gl, links)`. It returns the organic results,
-"People also ask", related searches, and the AI Overview and map places when
-Google shows them. `links` is how many of the top results get their full URL
+`google_search(query, pages, hl, gl, links)`. It asks Google's Web results
+only (`--lean`, on by default for `mcp`) and returns the organic results; start
+it with `--no-lean` to also get "People also ask", related searches, and the AI
+Overview and map places when Google shows them. `links` is how many of the top results get their full URL
 (default 5, or `--links N` on the `mcp` command); fewer answers sooner, and a
 result without one carries its site when Google shows it.
 Positions run on across the pages of one answer. A call repeated with the same
@@ -472,6 +473,7 @@ The defaults come from measurements in
 | `--no-personalization` | | Results without personalization (`pws=0`) |
 | `--no-autocorrect` | | Search a misspelt query as typed (`nfpr=1`) |
 | `--cr COUNTRIES`, `--lr LANGUAGES` | unset | Only documents from these countries (`countryUS`) or in these languages (`lang_en`) |
+| `--lean`, `--no-lean` | off; `mcp` on | Google's Web results only (`udm=14`): the organic links without the AI Overview, "People also ask", related searches or map places; pages about a third the size |
 | `--clone N` | 10 | Deprecated, removed in the next release. With `--renew-cookies 0`: new proxy IPs started from copied cookies; `0` turns copying off |
 | `--clone-max-age` | 180 | Deprecated, removed in the next release. Minutes copied cookies stay in use |
 | `--clone-refusals N` | 1 | Deprecated, removed in the next release. Copies refused in a row on their first query that end the copying |

@@ -317,6 +317,10 @@ class Settings:
     #: Directory each renewed set is written to, as `donor_<n>.json`, for the
     #: next run's `donors`.
     donors_out: str | None = None
+    #: True asks Google's Web results only (`udm=14`) on every results page:
+    #: the organic links without the AI Overview, "People also ask" or related
+    #: searches, on a lighter page.
+    lean: bool = False
 
     def __post_init__(self) -> None:  # noqa: C901
         engines.get(self.engine)
@@ -361,7 +365,7 @@ class Settings:
 
 def filter_params(s: Settings) -> dict[str, str]:
     """What a record's `search_parameters` carry for these settings' location and
-    filters (`location`, `tbs`, `pws`, `nfpr`, `cr`, `lr`), as written there."""
+    filters (`location`, `tbs`, `pws`, `nfpr`, `cr`, `lr`, `udm`), as written there."""
     shown = {
         k: v
         for k, v in browser.url_params(
@@ -371,6 +375,7 @@ def filter_params(s: Settings) -> dict[str, str]:
             autocorrect=s.autocorrect,
             cr=s.cr,
             lr=s.lr,
+            lean=s.lean,
         ).items()
         if k != "uule"
     }
@@ -1164,6 +1169,7 @@ class Scraper:
             autocorrect=s.autocorrect,
             cr=s.cr,
             lr=s.lr,
+            lean=s.lean,
         )
 
     def _record_params(self) -> dict[str, str]:
