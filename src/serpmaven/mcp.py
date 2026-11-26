@@ -49,9 +49,10 @@ TOOL = {
     "annotations": {"readOnlyHint": True, "openWorldHint": True},
     "description": (
         "Search Google through a real browser and the configured proxy. Returns "
-        "organic results (position, title, link, snippet), 'People also ask' "
-        "questions, related searches, the AI Overview and map places when Google "
-        "shows them. The first call can take a few minutes "
+        "organic results (position, title, link, snippet). When the server runs "
+        "with --no-lean it also returns 'People also ask' questions, related "
+        "searches, the AI Overview and map places when Google shows them. The "
+        "first call can take a few minutes "
         "while a proxy exit is warmed up; later calls take seconds."
     ),
     "inputSchema": {

@@ -142,8 +142,9 @@ def _parser(prog: str = "serpmaven") -> argparse.ArgumentParser:
     mcp.add_argument(
         "--prewarm", action="store_true", help="find a proxy IP Google serves before the first call"
     )
-    # An agent waits for the answer: the top results' links are what it reads.
-    mcp.set_defaults(handler=_mcp, links=MCP_LINKS)
+    # An agent waits for the answer: the top results' links are what it reads,
+    # and Web results only are the organic links it needs, on lighter pages.
+    mcp.set_defaults(handler=_mcp, links=MCP_LINKS, lean=True)
 
     parse = sub.add_parser("parse", help="parse a saved results page, offline")
     parse.add_argument("file", type=Path)
@@ -410,6 +411,14 @@ def _scraper_options(p: argparse.ArgumentParser) -> None:
         "--lr", metavar="LANGUAGES", help="only documents in these languages, e.g. lang_en"
     )
     p.add_argument(
+        "--lean",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Google's Web results only (udm=14): the organic links without the AI "
+        "Overview, People also ask, related searches or map places; lighter pages. "
+        "On by default for mcp; --no-lean asks the full page",
+    )
+    p.add_argument(
         "--save-html",
         type=Path,
         metavar="DIR",
@@ -582,6 +591,15 @@ def _cookie_sets(args) -> tuple[tuple[tuple[dict, ...], ...], str | None, tuple[
     return tuple(c for c, _ in kept), folder, tuple(name for _, name in kept)
 
 
+def _has_cookie_sets(args) -> bool:
+    """Whether new proxy IPs will start from cookie sets; a bad `--cookies`
+    file counts as none here and is reported when the run starts."""
+    try:
+        return bool(_cookie_sets(args)[0])
+    except (OSError, ValueError):
+        return False
+
+
 def kept_cookie_sets(
     folder: str, max_age: float = KEEP_HOURS * 3600, build: str | None = None
 ) -> tuple[tuple[tuple[dict, ...], str], ...]:
@@ -663,6 +681,7 @@ def _settings(args, *, pages: int = 1, worker: int | None = None) -> Settings:
         autocorrect=not args.no_autocorrect,
         cr=args.cr,
         lr=args.lr,
+        lean=bool(args.lean),
         donors=donors,
         renew_donors_every=args.renew_cookies,
         donors_out=donors_out,
@@ -781,10 +800,16 @@ PAGES_PER_HOUR = (250, 400)
 WARMUP_MB = 60
 
 
-def _estimate(queries: int, pages: int, workers: int, price: float | None) -> str:
-    """One line on what a run of `queries` is likely to cost in traffic and time."""
+def _estimate(
+    queries: int, pages: int, workers: int, price: float | None, has_sets: bool = False
+) -> str:
+    """One line on what a run of `queries` is likely to cost in traffic and time.
+    With cookie sets to start from, the low end has no warm-up: the high end
+    keeps it, since a set can be refused."""
     n = queries * pages
     low, high = (n * mb + WARMUP_MB for mb in MB_PER_PAGE)
+    if has_sets:
+        low -= WARMUP_MB
     # A query's pages go to one worker: more workers than queries sit idle.
     busy = max(min(workers, queries), 1)
     fast, slow = (n / (rate * busy) * 60 for rate in reversed(PAGES_PER_HOUR))
@@ -885,6 +910,7 @@ def _search(args) -> int:
                         args.pages,
                         args.workers,
                         args.price_per_gb,
+                        _has_cookie_sets(args),
                     ),
                     file=sys.stderr,
                 )

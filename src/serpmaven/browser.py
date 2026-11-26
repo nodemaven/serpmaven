@@ -150,13 +150,15 @@ def url_params(
     autocorrect: bool = True,
     cr: str | None = None,
     lr: str | None = None,
+    lean: bool = False,
 ) -> dict[str, str]:
     """The results-page parameters past `hl` and `gl`: `location` (a canonical
     place name, sent as `uule`), `tbs` (Google's time and other filters, e.g.
     "qdr:w" for the past week), `pws=0` when not `personalized`, `nfpr=1` when
     a misspelt query is to be searched as typed, and `cr` / `lr` to keep results
     to documents from some countries ("countryUS") or in some languages
-    ("lang_en")."""
+    ("lang_en"); `lean` asks Google's Web results only (`udm=14`), ten links a
+    page without the AI Overview, "People also ask" or related searches."""
     out = {}
     if location:
         out["uule"] = uule(location)
@@ -170,6 +172,8 @@ def url_params(
         out["cr"] = cr
     if lr:
         out["lr"] = lr
+    if lean:
+        out["udm"] = "14"
     return out
 
 

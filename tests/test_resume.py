@@ -259,6 +259,13 @@ def test_resume_counts_only_answers_made_with_the_same_location_and_filters(tmp_
     assert answered(out, 1, {**plain, "location": "Austin,Texas,United States"}) == {"pizza"}
     assert answered(out, 1, {"hl": "de", "gl": None}) == set()
     assert answered(out) == {"ramen", "pizza", "tacos"}  # no params: any search
+    # A --lean run does not count full-page answers, and the other way round.
+    assert answered(out, 1, {**plain, "udm": "14"}) == set()
+    lean = json.loads(_line("sushi"))
+    lean["search_parameters"]["udm"] = "14"
+    out.write_text(out.read_text(encoding="utf-8") + json.dumps(lean) + "\n", encoding="utf-8")
+    assert answered(out, 1, {**plain, "udm": "14"}) == {"sushi"}
+    assert answered(out, 1, plain) == {"ramen"}
 
 
 def test_resume_on_the_command_line_compares_the_filters(tmp_path, monkeypatch):

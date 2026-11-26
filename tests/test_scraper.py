@@ -1297,6 +1297,14 @@ def test_unpersonalized_uncorrected_country_and_language_reach_the_url_and_the_r
     assert url.endswith("&hl=en&pws=0&nfpr=1")
 
 
+def test_lean_asks_the_web_results_page_everywhere_and_says_so_in_the_record():
+    settings = Settings(lean=True, gap_seconds=(0, 0), dwell_seconds=(0, 0))
+    records = list(scraper([[SERVED]], settings).run(["a"]))
+    assert FakeSession.opened[0].options["params"] == {"udm": "14"}
+    assert records[0]["search_parameters"]["udm"] == "14"
+    assert results_url("pizza", extra=url_params(lean=True)).endswith("&hl=en&udm=14")
+
+
 def test_an_exit_serving_pages_unrelated_to_their_queries_is_retired_as_poisoned():
     # The fixture's titles are about swimming; three multi-word queries about
     # something else in a row look like the "poisoned" pages Google is
