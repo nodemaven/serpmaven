@@ -431,10 +431,17 @@ def test_a_new_slot_leaves_other_builds_and_broken_files_alone(tmp_path):
 
 
 def test_the_browser_build_names_engine_channel_and_package_version():
+    from importlib.metadata import version
+
     parse = cli._parser().parse_args
-    bundled = cli.browser_build(parse(["search", "q", "--no-proxy"]))
-    chrome = cli.browser_build(parse(["search", "q", "--no-proxy", "--channel", "chrome"]))
-    assert bundled.startswith("patchright/bundled/") and chrome.startswith("patchright/chrome/")
+    made_by = version("patchright")
+    bundled = parse(["search", "q", "--no-proxy"])
+    chrome = parse(["search", "q", "--no-proxy", "--channel", "chrome"])
+    assert cli.browser_build(bundled) == f"patchright/bundled/{made_by}"
+    assert cli.browser_build(chrome) == f"patchright/chrome/{made_by}"
+    # and the run's settings carry it, so renewed sets are written with it
+    assert cli._build(bundled, None)[0].settings.donor_build == f"patchright/bundled/{made_by}"
+    assert cli._build(chrome, None)[0].settings.donor_build == f"patchright/chrome/{made_by}"
 
 
 def test_kept_sets_are_left_alone_when_turned_off_or_given_explicitly(tmp_path):
